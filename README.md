@@ -2,9 +2,9 @@
   <img src="assets/rig.png" width="600"/>
 </div>
 
-# rig - tmux-based process manager
+# rig
 
-A lightweight process manager using tmux. Inspired by docker-compose, but not aiming for compatibility.
+A lightweight, tmux-based process manager inspired by docker-compose. Manage multiple local dev processes without Docker—fast, simple, stateless.
 
 ## Features
 
@@ -127,4 +127,6 @@ This tool was developed during the development of [halebase.com](https://halebas
 
 ---
 
-Note: This code was generated and iterated on using LLM.
+**Note:** While inspired by docker-compose, rig does not aim for compatibility with compose files or features.
+
+This code was generated and iterated on using LLM.
