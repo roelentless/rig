@@ -88,6 +88,8 @@ const SERVICE_COLORS = [
 
 const CONFIG_NAMES = ["noc.yaml", "noc.yml"];
 
+const VERSION = "0.1.0";
+
 // ============================================================================
 // UTILITIES
 // ============================================================================
@@ -958,6 +960,7 @@ ${COLORS.bold}COMMANDS:${COLORS.reset}
   top                     Live dashboard with auto-refreshing metrics
   logs <service> [-f]     Show logs (optionally follow)
   attach <service>        Attach to service tmux session
+  version                 Show version
 
 ${COLORS.bold}EXAMPLES:${COLORS.reset}
   noc start               Start all services
@@ -983,11 +986,16 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "a", "all", "f", "help", "h"],
-    alias: { a: "all", h: "help" },
+    boolean: ["d", "a", "all", "f", "help", "h", "V", "version"],
+    alias: { a: "all", h: "help", V: "version" },
   });
 
   const [command, ...services] = args._ as string[];
+
+  if (args.version || command === "version") {
+    console.log(VERSION);
+    Deno.exit(0);
+  }
 
   if (!command || args.help || command === "help") {
     printUsage();
