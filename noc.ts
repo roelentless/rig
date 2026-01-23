@@ -6,6 +6,8 @@
  * No state files - tmux is the source of truth.
  */
 
+const VERSION = "0.1.1";
+
 import { parse as parseYaml } from "jsr:@std/yaml";
 import { parseArgs } from "jsr:@std/cli/parse-args";
 
@@ -87,8 +89,6 @@ const SERVICE_COLORS = [
 ];
 
 const CONFIG_NAMES = ["noc.yaml", "noc.yml"];
-
-const VERSION = "0.1.0";
 
 // Disable colors when not a TTY (piping to other commands)
 const IS_TTY = Deno.stdout.isTerminal();
@@ -1009,27 +1009,27 @@ USAGE:
   noc <command> [options] [services...]
 
 COMMANDS:
-  init                    Create noc.yaml in current directory
-  start [services...]     Start services (foreground, streaming logs)
-  start -d [services...]  Start services in background (detached)
-  stop [services...]      Stop services
-  restart [services...]   Restart services
-  ps/list [-a|--all]      Show status (add -a for mem/cpu/ports)
-  top                     Live dashboard with auto-refreshing metrics
+  init                      Create noc.yaml in current directory
+  start [services...]       Start services (foreground, streaming logs)
+  start -d [services...]    Start services in background (detached)
+  stop [services...]        Stop services
+  restart [services...]     Restart services
+  ps/list [-a|--all]        Show status (add -a for mem/cpu/ports)
+  top                       Live dashboard with auto-refreshing metrics
   logs/tail [-f] [service]  Show logs (all or specific service)
-  version                 Show version
+  version                   Show version
 
 EXAMPLES:
-  noc start               Start all services
-  noc start -d            Start all in background
-  noc start codex haven   Start specific services
-  noc stop                Stop all services
-  noc restart codex       Restart single service
-  noc ps                  Show status
-  noc logs                Dump all logs
-  noc logs -f             Follow all logs (Ctrl+C to exit)
-  noc logs codex          Dump codex logs
-  noc logs -f codex       Follow codex logs
+  noc start                 Start all services
+  noc start -d              Start all in background
+  noc start api worker      Start specific services
+  noc stop                  Stop all services
+  noc restart api           Restart single service
+  noc ps                    Show status
+  noc logs                  Dump all logs
+  noc logs -f               Follow all logs (Ctrl+C to exit)
+  noc logs api              Dump api logs
+  noc logs -f api           Follow api logs
 
 CONFIG:
   Looks for noc.yaml or noc.yml in current directory.
