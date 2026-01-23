@@ -63,7 +63,7 @@ rig down               # Stop all processes
 rig stop api           # Stop specific process
 rig restart api        # Restart single process
 rig ps                 # Quick status check (~30ms)
-rig ps -a              # Status with mem/cpu/ports (~800ms)
+rig ps -f              # Status with mem/cpu/ports (~800ms)
 rig list               # Alias for ps
 rig top                # Live dashboard (q to exit)
 rig logs               # Dump all logs (alias: tail)

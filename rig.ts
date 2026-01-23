@@ -1021,7 +1021,7 @@ COMMANDS:
   start/up -d [names...]    Start processes in background (detached)
   stop/down [names...]      Stop processes
   restart [names...]        Restart processes
-  ps/list [-a|--all]        Show status (add -a for mem/cpu/ports)
+  ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
   logs/tail [-f] [name]     Show logs (all or specific process)
   version                   Show version
@@ -1052,8 +1052,8 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "a", "all", "f", "help", "h", "V", "version"],
-    alias: { a: "all", h: "help", V: "version" },
+    boolean: ["d", "f", "full", "help", "h", "V", "version"],
+    alias: { f: "full", h: "help", V: "version" },
   });
 
   const [command, ...services] = args._ as string[];
@@ -1087,7 +1087,7 @@ async function main(): Promise<void> {
         break;
       case "ps":
       case "list":
-        await cmdPs(mgr, config, args.all);
+        await cmdPs(mgr, config, args.full);
         break;
       case "top":
         await cmdTop(mgr, config);
