@@ -15,27 +15,31 @@ A lightweight process manager using tmux. Inspired by docker-compose, but not ai
 
 ## Installation
 
-**Dependencies:**
-
-Requires [Deno](https://docs.deno.com/runtime/getting_started/installation/) and `tmux`:
+**1. Install dependencies:**
 
 ```bash
-# Install Deno
-curl -fsSL https://deno.land/install.sh | sh  # macOS/Linux
-# or
-brew install deno  # macOS
+# Deno
+curl -fsSL https://deno.land/install.sh | sh
+# or: brew install deno
 
-# Install tmux
+# tmux
 brew install tmux  # macOS
+# or: apt install tmux  # Linux
 ```
 
-**Install rig:**
+**2. Clone and install:**
 
 ```bash
-# From local clone
+git clone https://github.com/@roelentless/rig.git
+cd rig
 deno task install
+```
 
-# Uninstall
+This installs `rig` to `~/.deno/bin/`. Make sure it's in your PATH.
+
+**Uninstall:**
+
+```bash
 deno task uninstall
 ```
 
