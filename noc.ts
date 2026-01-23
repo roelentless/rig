@@ -495,18 +495,6 @@ class SessionManager {
     return new TextDecoder().decode(stdout);
   }
 
-  attach(service: string): void {
-    const session = this.sessionName(service);
-    logSystem(`Attaching to ${service}... (Ctrl+B, D to detach)`);
-
-    const cmd = new Deno.Command("tmux", {
-      args: ["attach", "-t", session],
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    cmd.spawn();
-  }
 }
 
 // ============================================================================
@@ -879,34 +867,90 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
 
 async function cmdLogs(
   mgr: SessionManager,
-  name: string,
+  config: Config,
+  serviceName: string | undefined,
   follow: boolean
 ): Promise<void> {
-  if (!(await mgr.exists(name))) {
-    logError(`Service '${name}' is not running`);
+  const serviceNames = serviceName ? [serviceName] : Object.keys(config.services);
+
+  // Validate service exists
+  if (serviceName && !config.services[serviceName]) {
+    logError(`Unknown service: ${serviceName}`);
+    Deno.exit(1);
+  }
+
+  // Check at least one service is running
+  let anyRunning = false;
+  for (const svc of serviceNames) {
+    if (await mgr.exists(svc)) {
+      anyRunning = true;
+      break;
+    }
+  }
+
+  if (!anyRunning) {
+    logError(serviceName ? `Service '${serviceName}' is not running` : "No services running");
     Deno.exit(1);
   }
 
   if (follow) {
-    let lastLine = 0;
-    while (true) {
-      const logs = await mgr.logs(name);
+    // Follow mode - tail logs, Ctrl+C just exits (doesn't stop services)
+    const lastLines: Record<string, number> = {};
+    for (const svc of serviceNames) lastLines[svc] = 0;
+
+    let running = true;
+
+    Deno.addSignalListener("SIGINT", () => {
+      running = false;
+    });
+
+    // Initial dump of existing logs
+    for (const svc of serviceNames) {
+      if (!(await mgr.exists(svc))) continue;
+      const logs = await mgr.logs(svc);
       const lines = logs.split("\n");
-      const newLines = lines.slice(lastLine);
-      for (const line of newLines) {
-        if (line.trim()) console.log(line);
+      const color = getServiceColor(config.services, svc);
+      for (const line of lines) {
+        if (line.trim()) {
+          log(line, svc, color);
+        }
       }
-      lastLine = lines.length;
+      lastLines[svc] = lines.length;
+    }
+
+    // Follow new output
+    while (running) {
+      for (const svc of serviceNames) {
+        if (!running) break;
+        if (!(await mgr.exists(svc))) continue;
+
+        const logs = await mgr.logs(svc);
+        const lines = logs.split("\n");
+        const newLines = lines.slice(lastLines[svc]);
+
+        const color = getServiceColor(config.services, svc);
+        for (const line of newLines) {
+          if (line.trim()) {
+            log(line, svc, color);
+          }
+        }
+        lastLines[svc] = lines.length;
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
   } else {
-    const logs = await mgr.logs(name);
-    console.log(logs);
+    // Dump mode - show all logs and exit
+    for (const svc of serviceNames) {
+      if (!(await mgr.exists(svc))) continue;
+      const logs = await mgr.logs(svc);
+      const color = getServiceColor(config.services, svc);
+      for (const line of logs.split("\n")) {
+        if (line.trim()) {
+          log(line, svc, color);
+        }
+      }
+    }
   }
-}
-
-function cmdAttach(mgr: SessionManager, name: string): void {
-  mgr.attach(name);
 }
 
 async function cmdInit(): Promise<void> {
@@ -958,8 +1002,7 @@ ${COLORS.bold}COMMANDS:${COLORS.reset}
   restart [services...]   Restart services
   ps/list [-a|--all]      Show status (add -a for mem/cpu/ports)
   top                     Live dashboard with auto-refreshing metrics
-  logs <service> [-f]     Show logs (optionally follow)
-  attach <service>        Attach to service tmux session
+  logs/tail [-f] [service]  Show logs (all or specific service)
   version                 Show version
 
 ${COLORS.bold}EXAMPLES:${COLORS.reset}
@@ -969,8 +1012,10 @@ ${COLORS.bold}EXAMPLES:${COLORS.reset}
   noc stop                Stop all services
   noc restart codex       Restart single service
   noc ps                  Show status
-  noc logs codex -f       Follow codex logs
-  noc attach codex        Attach to codex (Ctrl+B, D to detach)
+  noc logs                Dump all logs
+  noc logs -f             Follow all logs (Ctrl+C to exit)
+  noc logs codex          Dump codex logs
+  noc logs -f codex       Follow codex logs
 
 ${COLORS.bold}CONFIG:${COLORS.reset}
   Looks for noc.yaml or noc.yml in current directory.
@@ -1027,24 +1072,10 @@ async function main(): Promise<void> {
     }
   } else if (command === "init") {
     await cmdInit();
-  } else if (command === "logs") {
+  } else if (command === "logs" || command === "tail") {
     const { config } = await loadConfig();
     const mgr = new SessionManager(config.group);
-    const name = services[0];
-    if (!name) {
-      logError("Usage: noc logs <service> [-f]");
-      Deno.exit(1);
-    }
-    await cmdLogs(mgr, name, args.f);
-  } else if (command === "attach") {
-    const { config } = await loadConfig();
-    const mgr = new SessionManager(config.group);
-    const name = services[0];
-    if (!name) {
-      logError("Usage: noc attach <service>");
-      Deno.exit(1);
-    }
-    cmdAttach(mgr, name);
+    await cmdLogs(mgr, config, services[0], args.f);
   } else {
     logError(`Unknown command: ${command}`);
     printUsage();

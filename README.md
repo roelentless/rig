@@ -61,8 +61,10 @@ noc ps                 # Quick status check (~30ms)
 noc ps -a              # Status with mem/cpu/ports (~800ms)
 noc list               # Alias for ps
 noc top                # Live dashboard (q to exit)
-noc logs api -f        # Follow logs
-noc attach api         # Attach to tmux session (Ctrl+B, D to detach)
+noc logs               # Dump all logs (alias: tail)
+noc logs -f            # Follow all logs (Ctrl+C to exit)
+noc logs api           # Dump api logs
+noc logs -f api        # Follow api logs
 ```
 
 ## Configuration
