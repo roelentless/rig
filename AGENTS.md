@@ -58,6 +58,54 @@ CLI                    → main(), printUsage()
 
 4. **lsof on macOS**: `-p` flag doesn't filter with `-i`. Parse output and filter by PID.
 
+## Testing
+
+Tests are organized by platform in the `test/` folder.
+
+### Quick feedback loop (Mac only)
+
+During development, test quickly with Mac-only tests:
+
+```sh
+deno task test:darwin
+```
+
+This is sufficient for rapid iteration and validation. Docker tests are slower.
+
+### Validate all platforms after task completion
+
+After completing any task, **always** run both platform tests to ensure cross-platform compatibility:
+
+```sh
+deno task test:darwin  # Fast Mac validation
+deno task test:linux   # Slower Docker validation
+```
+
+The Linux tests run in Docker and take ~15-20s due to container build. Both must pass.
+
+### Test maintenance
+
+When modifying `rig.ts`:
+- Update both `darwin.test.ts` and `linux.test.ts` with identical test logic
+- Tests should have identical assertions (only platform detection differs)
+- Validate both platforms pass before considering the task complete
+
+### Test structure
+
+```
+test/
+  _helpers.ts       # Shared utilities (rig runner, tmux helpers, config)
+  darwin.test.ts    # macOS-specific tests
+  linux.test.ts     # Linux-specific tests (run in Docker)
+  Dockerfile        # Linux test environment
+```
+
+### Run all tests
+
+```sh
+deno task test  # Runs current platform only
+```
+
 ## Future Considerations
 
 - Auto-restart: tmux has `respawn-pane` but adds complexity

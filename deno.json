@@ -4,7 +4,9 @@
   "exports": "./rig.ts",
   "tasks": {
     "dev": "deno run -A rig.ts",
-    "test": "deno test -A rig.test.ts",
+    "test": "deno test -A test/",
+    "test:darwin": "deno test -A test/darwin.test.ts",
+    "test:linux": "docker build -f test/Dockerfile -t rig-test-linux . && docker run --rm rig-test-linux",
     "install": "deno install -A -g -n rig rig.ts",
     "uninstall": "deno uninstall -g rig"
   }

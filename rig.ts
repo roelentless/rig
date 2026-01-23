@@ -669,23 +669,26 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
   
   if (showAll) {
     print(
-      `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME${c("reset")}`
+      `${c("bold")}SERVICE        STATUS         PID    MEM    CPU  PORTS            UPTIME${c("reset")}`
     );
-    print("─".repeat(72));
+    print("─".repeat(80));
   } else {
-    print(`${c("bold")}SERVICE        STATUS      UPTIME${c("reset")}`);
+    print(`${c("bold")}SERVICE        STATUS       UPTIME${c("reset")}`);
     print("─".repeat(40));
   }
 
   for (const svc of allServices) {
     const session = sessions.find((s) => s.name === svc);
-    let status: string;
+    let statusText: string;
+    let statusColor: string;
     let uptime = "-";
 
     if (!session) {
-      status = `${c("dim")}stopped${c("reset")}`;
+      statusText = "stopped";
+      statusColor = "dim";
     } else if (session.running) {
-      status = `${c("green")}running${c("reset")}`;
+      statusText = "running";
+      statusColor = "green";
 
       if (session.created) {
         const elapsed = Math.floor(Date.now() / 1000 - session.created);
@@ -702,15 +705,18 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
         }
       }
     } else {
-      status = `${c("red")}exit(${session.exitCode})${c("reset")}`;
+      statusText = `exit(${session.exitCode})`;
+      statusColor = "red";
     }
 
     if (showAll) {
+      let pid = "-";
       let mem = "-";
       let cpu = "-";
       let ports = "-";
 
       if (session?.running && session.pid) {
+        pid = String(session.pid);
         const metrics = await getProcessMetrics(session.pid);
         mem = `${metrics.memoryMB}M`;
         cpu = `${metrics.cpuPercent}%`;
@@ -718,13 +724,15 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
       }
 
       const svcCol = svc.padEnd(14);
-      const statusCol = status.padEnd(20);
+      const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
+      const pidCol = pid.padStart(6);
       const memCol = mem.padStart(5);
       const cpuCol = cpu.padStart(5);
       const portsCol = ports.padEnd(16);
-      print(`${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptime}`);
+      print(`${svcCol} ${statusCol} ${pidCol} ${memCol} ${cpuCol}  ${portsCol} ${uptime}`);
     } else {
-      print(`${svc.padEnd(14)} ${status.padEnd(20)} ${uptime}`);
+      const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
+      print(`${svc.padEnd(14)} ${statusCol} ${uptime}`);
     }
   }
   print("");
