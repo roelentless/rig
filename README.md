@@ -52,7 +52,7 @@ noc stop               # Stop all services
 
 ```bash
 noc init               # Create noc.yaml in current directory
-noc start              # Start all services (foreground, streaming logs)
+noc start              # Start all services (foreground, or reconnect if running)
 noc start -d           # Start detached (background)
 noc start api worker   # Start specific services
 noc stop               # Stop all services
