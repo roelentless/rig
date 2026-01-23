@@ -118,4 +118,6 @@ AGPL-3.0 - See LICENSE file.
 
 ---
 
-Built during development of [halebase.com](https://halebase.com). Generated with LLM assistance.
+Note: built to improve my personal workflow during development of [halebase.com](https://halebase.com) — don’t take it too seriously.
+
+Generated with LLM assistance.
