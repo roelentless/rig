@@ -6,7 +6,7 @@
  * No state files - tmux is the source of truth.
  */
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 
 import { parse as parseYaml } from "jsr:@std/yaml";
 import { parseArgs } from "jsr:@std/cli/parse-args";
