@@ -90,9 +90,30 @@ const CONFIG_NAMES = ["noc.yaml", "noc.yml"];
 
 const VERSION = "0.1.0";
 
+// Disable colors when not a TTY (piping to other commands)
+const IS_TTY = Deno.stdout.isTerminal();
+
 // ============================================================================
 // UTILITIES
 // ============================================================================
+
+// Get color code only if TTY
+function c(color: string): string {
+  if (!IS_TTY) return "";
+  return COLORS[color] ?? "";
+}
+
+// Safe print that handles broken pipe (EPIPE) gracefully
+function print(msg: string): void {
+  try {
+    console.log(msg);
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("Broken pipe")) {
+      Deno.exit(0);
+    }
+    throw e;
+  }
+}
 
 function log(msg: string, prefix?: string, color?: string): void {
   const now = new Date();
@@ -106,12 +127,12 @@ function log(msg: string, prefix?: string, color?: string): void {
     "." +
     now.getMilliseconds().toString().padStart(3, "0");
 
-  const colorCode = color ? COLORS[color] ?? "" : "";
+  const colorCode = color ? c(color) : "";
   const prefixStr = prefix
-    ? `${colorCode}${prefix.padEnd(12)}${COLORS.reset} `
+    ? `${colorCode}${prefix.padEnd(12)}${c("reset")} `
     : "";
 
-  console.log(`${COLORS.dim}${ts}${COLORS.reset} ${prefixStr}${msg}`);
+  print(`${c("dim")}${ts}${c("reset")} ${prefixStr}${msg}`);
 }
 
 function logSystem(msg: string): void {
@@ -248,24 +269,17 @@ async function checkTmux(): Promise<boolean> {
 }
 
 function printTmuxInstallGuide(): void {
-  console.log(`
-${COLORS.red}${COLORS.bold}Error: tmux is not installed${COLORS.reset}
+  print(`
+${c("red")}Error: tmux is not installed${c("reset")}
 
 noc requires tmux to manage background processes.
 
-${COLORS.bold}Install tmux:${COLORS.reset}
+Install tmux:
 
-  ${COLORS.cyan}macOS:${COLORS.reset}
-    brew install tmux
-
-  ${COLORS.cyan}Ubuntu/Debian:${COLORS.reset}
-    sudo apt install tmux
-
-  ${COLORS.cyan}Fedora:${COLORS.reset}
-    sudo dnf install tmux
-
-  ${COLORS.cyan}Arch:${COLORS.reset}
-    sudo pacman -S tmux
+  macOS:        brew install tmux
+  Ubuntu/Debian: sudo apt install tmux
+  Fedora:       sudo dnf install tmux
+  Arch:         sudo pacman -S tmux
 
 After installing, run this command again.
 `);
@@ -644,16 +658,16 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
   const sessions = await mgr.listAll();
   const allServices = Object.keys(config.services);
 
-  console.log("");
+  print("");
   
   if (showAll) {
-    console.log(
-      `${COLORS.bold}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME${COLORS.reset}`
+    print(
+      `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME${c("reset")}`
     );
-    console.log("─".repeat(72));
+    print("─".repeat(72));
   } else {
-    console.log(`${COLORS.bold}SERVICE        STATUS      UPTIME${COLORS.reset}`);
-    console.log("─".repeat(40));
+    print(`${c("bold")}SERVICE        STATUS      UPTIME${c("reset")}`);
+    print("─".repeat(40));
   }
 
   for (const svc of allServices) {
@@ -662,9 +676,9 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
     let uptime = "-";
 
     if (!session) {
-      status = `${COLORS.dim}stopped${COLORS.reset}`;
+      status = `${c("dim")}stopped${c("reset")}`;
     } else if (session.running) {
-      status = `${COLORS.green}running${COLORS.reset}`;
+      status = `${c("green")}running${c("reset")}`;
 
       if (session.created) {
         const elapsed = Math.floor(Date.now() / 1000 - session.created);
@@ -681,7 +695,7 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
         }
       }
     } else {
-      status = `${COLORS.red}exit(${session.exitCode})${COLORS.reset}`;
+      status = `${c("red")}exit(${session.exitCode})${c("reset")}`;
     }
 
     if (showAll) {
@@ -701,12 +715,12 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
       const memCol = mem.padStart(5);
       const cpuCol = cpu.padStart(5);
       const portsCol = ports.padEnd(16);
-      console.log(`${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptime}`);
+      print(`${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptime}`);
     } else {
-      console.log(`${svc.padEnd(14)} ${status.padEnd(20)} ${uptime}`);
+      print(`${svc.padEnd(14)} ${status.padEnd(20)} ${uptime}`);
     }
   }
-  console.log("");
+  print("");
 }
 
 async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
@@ -802,8 +816,8 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
 
     // Render
     let output = CLEAR;
-    output += `${COLORS.bold}noc top${COLORS.reset} - press q or Ctrl+C to exit\n\n`;
-    output += `${COLORS.bold}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${COLORS.reset}\n`;
+    output += `${c("bold")}noc top${c("reset")} - press q or Ctrl+C to exit\n\n`;
+    output += `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
     output += "─".repeat(72) + "\n";
 
     for (const svc of allServices) {
@@ -818,19 +832,19 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
 
       if (!session || !session.running) {
         if (session?.exitCode !== undefined) {
-          status = `${COLORS.red}exit(${session.exitCode})${COLORS.reset}`;
+          status = `${c("red")}exit(${session.exitCode})${c("reset")}`;
         } else {
-          status = `${COLORS.dim}stopped${COLORS.reset}`;
+          status = `${c("dim")}stopped${c("reset")}`;
         }
       } else {
-        status = `${COLORS.green}running${COLORS.reset}`;
+        status = `${c("green")}running${c("reset")}`;
         mem = `${m.memoryMB}M`;
         
         // Color CPU based on usage
         if (m.cpuPercent > 50) {
-          cpu = `${COLORS.red}${m.cpuPercent}%${COLORS.reset}`;
+          cpu = `${c("red")}${m.cpuPercent}%${c("reset")}`;
         } else if (m.cpuPercent > 10) {
-          cpu = `${COLORS.yellow}${m.cpuPercent}%${COLORS.reset}`;
+          cpu = `${c("yellow")}${m.cpuPercent}%${c("reset")}`;
         } else {
           cpu = `${m.cpuPercent}%`;
         }
@@ -988,13 +1002,13 @@ services:
 // ============================================================================
 
 function printUsage(): void {
-  console.log(`
-${COLORS.bold}noc${COLORS.reset} - no-containers service manager
+  print(`
+noc - no-containers service manager
 
-${COLORS.bold}USAGE:${COLORS.reset}
+USAGE:
   noc <command> [options] [services...]
 
-${COLORS.bold}COMMANDS:${COLORS.reset}
+COMMANDS:
   init                    Create noc.yaml in current directory
   start [services...]     Start services (foreground, streaming logs)
   start -d [services...]  Start services in background (detached)
@@ -1005,7 +1019,7 @@ ${COLORS.bold}COMMANDS:${COLORS.reset}
   logs/tail [-f] [service]  Show logs (all or specific service)
   version                 Show version
 
-${COLORS.bold}EXAMPLES:${COLORS.reset}
+EXAMPLES:
   noc start               Start all services
   noc start -d            Start all in background
   noc start codex haven   Start specific services
@@ -1017,7 +1031,7 @@ ${COLORS.bold}EXAMPLES:${COLORS.reset}
   noc logs codex          Dump codex logs
   noc logs -f codex       Follow codex logs
 
-${COLORS.bold}CONFIG:${COLORS.reset}
+CONFIG:
   Looks for noc.yaml or noc.yml in current directory.
 `);
 }
@@ -1038,7 +1052,7 @@ async function main(): Promise<void> {
   const [command, ...services] = args._ as string[];
 
   if (args.version || command === "version") {
-    console.log(VERSION);
+    print(VERSION);
     Deno.exit(0);
   }
 
