@@ -231,23 +231,23 @@ Deno.test({
         throw new Error("echo-svc running line not found in ps -f output");
       }
 
-      // Parse the line: SERVICE STATUS PID MEM CPU PORTS UPTIME
+      // Parse the line: SERVICE STATUS MEM CPU PORTS UPTIME PID
       const parts = echoLine.trim().split(/\s+/);
       assertEquals(parts[0], "echo-svc");
       assertEquals(parts[1], "running");
 
-      // PID should be a valid number
-      const pid = parseInt(parts[2], 10);
-      assertEquals(isNaN(pid), false, `PID should be a number, got: ${parts[2]}`);
-      assertEquals(pid > 0, true, `PID should be positive, got: ${pid}`);
-
       // MEM should match format like "5M" or "0M"
-      const memMatch = parts[3].match(/^\d+M$/);
-      assertEquals(memMatch !== null, true, `MEM should match \\dM format, got: ${parts[3]}`);
+      const memMatch = parts[2].match(/^\d+M$/);
+      assertEquals(memMatch !== null, true, `MEM should match \\dM format, got: ${parts[2]}`);
 
       // CPU should match format like "0.1%" or "0%"
-      const cpuMatch = parts[4].match(/^\d+(\.\d+)?%$/);
-      assertEquals(cpuMatch !== null, true, `CPU should match percentage format, got: ${parts[4]}`);
+      const cpuMatch = parts[3].match(/^\d+(\.\d+)?%$/);
+      assertEquals(cpuMatch !== null, true, `CPU should match percentage format, got: ${parts[3]}`);
+
+      // PID is at the end - should be a valid number
+      const pid = parseInt(parts[parts.length - 1], 10);
+      assertEquals(isNaN(pid), false, `PID should be a number, got: ${parts[parts.length - 1]}`);
+      assertEquals(pid > 0, true, `PID should be positive, got: ${pid}`);
     } finally {
       await teardown();
     }

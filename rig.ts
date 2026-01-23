@@ -669,7 +669,7 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
   
   if (showAll) {
     print(
-      `${c("bold")}SERVICE        STATUS         PID    MEM    CPU  PORTS            UPTIME${c("reset")}`
+      `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME      PID${c("reset")}`
     );
     print("─".repeat(80));
   } else {
@@ -725,11 +725,11 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
 
       const svcCol = svc.padEnd(14);
       const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
-      const pidCol = pid.padStart(6);
       const memCol = mem.padStart(5);
       const cpuCol = cpu.padStart(5);
       const portsCol = ports.padEnd(16);
-      print(`${svcCol} ${statusCol} ${pidCol} ${memCol} ${cpuCol}  ${portsCol} ${uptime}`);
+      const uptimeCol = uptime.padEnd(10);
+      print(`${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptimeCol} ${pid}`);
     } else {
       const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
       print(`${svc.padEnd(14)} ${statusCol} ${uptime}`);
