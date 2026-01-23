@@ -1,6 +1,10 @@
+<div align="center">
+  <img src="assets/kitt.png" alt="Michael Knight managing services" width="600"/>
+</div>
+
 # noc - simple NO-Container service manager
 
-A lightweight service manager using tmux. Think docker-compose without Docker.
+A lightweight service manager using tmux. Think docker-compose without Docker, but with more leather jackets.
 
 ## Features
 
