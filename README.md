@@ -84,7 +84,7 @@ services:
     command: deno run -A server.ts
     cwd: ./backend
     env:
-      PORT: "3000"
+      PORT: 3000
 
   web:
     command: npm run dev
@@ -110,9 +110,10 @@ services:
   api:                          # Process name
     command: deno run -A app.ts # Required. Command to run
     cwd: ./backend              # Required. Working directory (relative or absolute)
-    env:                        # Optional. Environment variables
-      PORT: "3000"
-      DATABASE_URL: "postgres://localhost/myapp"
+    env:                        # Optional. Environment variables (values auto-converted to strings)
+      PORT: 3000
+      DEBUG: true
+      DATABASE_URL: postgres://localhost/myapp
     color: cyan                 # Optional. Log color (cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet)
 ```
 

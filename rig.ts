@@ -332,10 +332,17 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
       cwd = `${configDir}/${cwd}`;
     }
 
+    // Convert all env values to strings for noob-friendliness
+    const env = d.env
+      ? Object.fromEntries(
+          Object.entries(d.env as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+        )
+      : undefined;
+
     services[name] = {
       command: d.command as string,
       cwd,
-      env: d.env as Record<string, string> | undefined,
+      env,
       color: d.color as string | undefined,
     };
   }
