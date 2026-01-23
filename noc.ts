@@ -907,6 +907,36 @@ function cmdAttach(mgr: SessionManager, name: string): void {
   mgr.attach(name);
 }
 
+async function cmdInit(): Promise<void> {
+  // Check if config already exists
+  for (const name of CONFIG_NAMES) {
+    try {
+      await Deno.stat(name);
+      logError(`${name} already exists`);
+      Deno.exit(1);
+    } catch {
+      // File doesn't exist, continue
+    }
+  }
+
+  const template = `group: myapp
+
+services:
+  api:
+    command: deno run -A server.ts
+    cwd: ./backend
+    env:
+      PORT: "3000"
+
+  web:
+    command: npm run dev
+    cwd: ./frontend
+`;
+
+  await Deno.writeTextFile("noc.yaml", template);
+  logSystem("Created noc.yaml");
+}
+
 // ============================================================================
 // CLI
 // ============================================================================
@@ -919,6 +949,7 @@ ${COLORS.bold}USAGE:${COLORS.reset}
   noc <command> [options] [services...]
 
 ${COLORS.bold}COMMANDS:${COLORS.reset}
+  init                    Create noc.yaml in current directory
   start [services...]     Start services (foreground, streaming logs)
   start -d [services...]  Start services in background (detached)
   stop [services...]      Stop services
@@ -985,6 +1016,8 @@ async function main(): Promise<void> {
         await cmdTop(mgr, config);
         break;
     }
+  } else if (command === "init") {
+    await cmdInit();
   } else if (command === "logs") {
     const { config } = await loadConfig();
     const mgr = new SessionManager(config.group);

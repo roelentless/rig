@@ -2,23 +2,17 @@
 
 A lightweight service manager using tmux. Think docker-compose without Docker.
 
-**Goal: easy service management.**
-
 ## Features
 
 - **Stateless**: tmux is the source of truth, no state files
 - **Detachable**: services survive terminal close, re-attach anytime
 - **Simple config**: YAML file defines services
 - **Process metrics**: memory, CPU, ports via `ps -s` or `top`
-- **Smart refresh**: high-CPU services refresh faster in `top`
 
 ## Installation
 
 ```bash
-# Install globally
-deno install -A -g -n noc https://raw.githubusercontent.com/your-repo/noc/main/noc.ts
-
-# Or from local clone
+# From local clone
 deno task install
 
 # Uninstall
@@ -30,9 +24,19 @@ Requires `tmux`:
 brew install tmux  # macOS
 ```
 
+## Quick Start
+
+```bash
+noc init               # Create noc.yaml
+noc start              # Start all services (foreground)
+noc start -d           # Start detached (background)
+noc stop               # Stop all services
+```
+
 ## Usage
 
 ```bash
+noc init               # Create noc.yaml in current directory
 noc start              # Start all services (foreground, streaming logs)
 noc start -d           # Start detached (background)
 noc start api worker   # Start specific services
@@ -58,89 +62,36 @@ services:
     cwd: ./backend
     env:
       PORT: "3000"
-      DATABASE_URL: "postgres://localhost/myapp"
-    color: cyan
 
   web:
     command: npm run dev
     cwd: ./frontend
-    env:
-      API_URL: "http://localhost:3000"
-    color: green
-
-  worker:
-    command: python worker.py
-    cwd: ./worker
-    env:
-      QUEUE_URL: "redis://localhost:6379"
-    color: yellow
-
-  db:
-    command: postgres -D data
-    cwd: ./database
-    color: magenta
-```
-
-### Fields
-
-|| Field | Required | Description |
-|-------|----------|-------------|
-| `group` | yes | Prefix for tmux sessions (e.g., `myapp-api`) |
-| `services.*.command` | yes | Command to run |
-| `services.*.cwd` | yes | Working directory (relative to config or absolute) |
-| `services.*.env` | no | Environment variables |
-| `services.*.color` | no | Output color: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal |
-
-## Architecture
-
-```
-noc.yaml          Config defining services
-    ↓
-SessionManager    Manages tmux sessions (start/stop/status)
-    ↓
-tmux sessions     Named {group}-{service}, e.g., myapp-api
-```
-
-**Key design decisions:**
-
-1. **tmux as state**: No state file. Query `tmux list-sessions` to know what's running.
-2. **Session naming**: `{group}-{service}` makes discovery simple.
-3. **Process tree metrics**: `pgrep -P` finds children, `ps` sums memory/CPU.
-4. **Smart refresh**: `top` refreshes high-CPU services more frequently.
-
-## Development
-
-```bash
-# Run tests
-deno task test
-
-# Run locally
-deno task dev start
 ```
 
 ## How It Works
 
-### Starting a Service
-1. Create tmux session: `tmux new-session -d -s {group}-{name} -c {cwd} '{env} exec {command}'`
-2. Set `remain-on-exit on` to preserve crash output
-3. Session auto-removes when killed
+**tmux as state**: No state files. Query `tmux list-sessions` to know what's running.
 
-### Stopping a Service
-1. `tmux kill-session -t {group}-{name}`
-2. Process receives SIGHUP → exits → port released
+- Start: `tmux new-session -d -s {group}-{name} -c {cwd} '{command}'`
+- Stop: `tmux kill-session -t {group}-{name}` → SIGHUP → process exits
+- Status: `tmux list-sessions` filtered by group prefix
 
-### Querying Status
-1. `tmux list-sessions -F '#{session_name}:#{pane_pid}:#{pane_dead}:#{pane_dead_status}'`
-2. Filter by group prefix
-3. `pane_dead=1` means process exited
+## Config Reference
 
-### Process Metrics
-1. Get root PID from tmux
-2. Find children: `pgrep -P {pid}` recursively
-3. Memory/CPU: `ps -o rss,%cpu -p {pids}`
-4. Ports: `lsof -i -P -n`, filter by PID
+Full config with all options:
 
----
+```yaml
+group: myapp                    # Required. Prefix for tmux sessions
+
+services:
+  api:                          # Service name
+    command: deno run -A app.ts # Required. Command to run
+    cwd: ./backend              # Required. Working directory (relative or absolute)
+    env:                        # Optional. Environment variables
+      PORT: "3000"
+      DATABASE_URL: "postgres://localhost/myapp"
+    color: cyan                 # Optional. Log color (cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet)
+```
 
 ## License
 
@@ -149,3 +100,7 @@ AGPL-3.0 - See LICENSE file for details.
 ## About
 
 This tool was developed during the development of [halebase.com](https://halebase.com).
+
+---
+
+Note: This code was generated and iterated on using LLM.
