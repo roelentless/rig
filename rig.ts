@@ -1070,35 +1070,51 @@ async function main(): Promise<void> {
 
   // Commands that need config
   if (["start", "up", "stop", "down", "restart", "ps", "list", "top"].includes(command)) {
-    const { config } = await loadConfig();
-    const mgr = new SessionManager(config.group);
+    try {
+      const { config } = await loadConfig();
+      const mgr = new SessionManager(config.group);
 
-    switch (command) {
-      case "start":
-      case "up":
-        await cmdStart(mgr, config, services, args.d);
-        break;
-      case "stop":
-      case "down":
-        await cmdStop(mgr, config, services);
-        break;
-      case "restart":
-        await cmdRestart(mgr, config, services);
-        break;
-      case "ps":
-      case "list":
-        await cmdPs(mgr, config, args.full);
-        break;
-      case "top":
-        await cmdTop(mgr, config);
-        break;
+      switch (command) {
+        case "start":
+        case "up":
+          await cmdStart(mgr, config, services, args.d);
+          break;
+        case "stop":
+        case "down":
+          await cmdStop(mgr, config, services);
+          break;
+        case "restart":
+          await cmdRestart(mgr, config, services);
+          break;
+        case "ps":
+        case "list":
+          await cmdPs(mgr, config, args.full);
+          break;
+        case "top":
+          await cmdTop(mgr, config);
+          break;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Config file not found")) {
+        console.error("No config file found. Run 'rig init' to create one.");
+        Deno.exit(1);
+      }
+      throw err;
     }
   } else if (command === "init") {
     await cmdInit();
   } else if (command === "logs" || command === "tail") {
-    const { config } = await loadConfig();
-    const mgr = new SessionManager(config.group);
-    await cmdLogs(mgr, config, services[0], args.f);
+    try {
+      const { config } = await loadConfig();
+      const mgr = new SessionManager(config.group);
+      await cmdLogs(mgr, config, services[0], args.f);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Config file not found")) {
+        console.error("No config file found. Run 'rig init' to create one.");
+        Deno.exit(1);
+      }
+      throw err;
+    }
   } else {
     logError(`Unknown command: ${command}`);
     printUsage();
