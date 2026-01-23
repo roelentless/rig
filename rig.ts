@@ -17,8 +17,8 @@ import { parseArgs } from "jsr:@std/cli/parse-args";
 
 interface ServiceDef {
   command: string;
-  cwd: string;
-  env?: Record<string, string>;
+  working_dir: string;
+  environment?: Record<string, string>;
   color?: string;
 }
 
@@ -322,27 +322,27 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
     if (!d.command || typeof d.command !== "string") {
       throw new Error(`Service '${name}' must have a 'command' field`);
     }
-    if (!d.cwd || typeof d.cwd !== "string") {
-      throw new Error(`Service '${name}' must have a 'cwd' field`);
+    if (!d.working_dir || typeof d.working_dir !== "string") {
+      throw new Error(`Service '${name}' must have a 'working_dir' field`);
     }
 
-    // Resolve relative cwd paths
-    let cwd = d.cwd as string;
-    if (!cwd.startsWith("/")) {
-      cwd = `${configDir}/${cwd}`;
+    // Resolve relative working_dir paths
+    let working_dir = d.working_dir as string;
+    if (!working_dir.startsWith("/")) {
+      working_dir = `${configDir}/${working_dir}`;
     }
 
-    // Convert all env values to strings for noob-friendliness
-    const env = d.env
+    // Convert all environment values to strings for noob-friendliness
+    const environment = d.environment
       ? Object.fromEntries(
-          Object.entries(d.env as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+          Object.entries(d.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
         )
       : undefined;
 
     services[name] = {
       command: d.command as string,
-      cwd,
-      env,
+      working_dir,
+      environment,
       color: d.color as string | undefined,
     };
   }
@@ -386,13 +386,13 @@ class SessionManager {
       await this.stop(service);
     }
 
-    // Build command with env vars
-    const envStr = def.env ? buildEnvString(def.env) + " " : "";
+    // Build command with environment vars
+    const envStr = def.environment ? buildEnvString(def.environment) + " " : "";
     const cmd = `${envStr}exec ${def.command}`;
 
     // Create tmux session
     const tmux = new Deno.Command("tmux", {
-      args: ["new-session", "-d", "-s", session, "-c", def.cwd, cmd],
+      args: ["new-session", "-d", "-s", session, "-c", def.working_dir, cmd],
     });
     const result = await tmux.output();
 
@@ -999,13 +999,13 @@ async function cmdInit(): Promise<void> {
 services:
   api:
     command: deno run -A server.ts
-    cwd: ./backend
-    env:
+    working_dir: ./backend
+    environment:
       PORT: "3000"
 
   web:
     command: npm run dev
-    cwd: ./frontend
+    working_dir: ./frontend
 `;
 
   await Deno.writeTextFile("rig.yaml", template);

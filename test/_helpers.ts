@@ -14,17 +14,17 @@ group: ${TEST_GROUP}
 services:
   echo-svc:
     command: sh -c "echo 'hello from echo-svc'; sleep 30"
-    cwd: /tmp
+    working_dir: /tmp
     color: cyan
 
   counter:
     command: sh -c "for i in 1 2 3 4 5; do echo count-\\$i; sleep 1; done; sleep 30"
-    cwd: /tmp
+    working_dir: /tmp
     color: yellow
 
   quick-exit:
     command: sh -c "echo 'quick exit'; exit 42"
-    cwd: /tmp
+    working_dir: /tmp
     color: red
 `;
 

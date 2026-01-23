@@ -54,13 +54,13 @@ group: myapp
 services:
   api:
     command: deno run -A server.ts
-    cwd: ./backend
-    env:
+    working_dir: ./backend
+    environment:
       PORT: 3000
 
   web:
     command: npm run dev
-    cwd: ./frontend
+    working_dir: ./frontend
 ```
 
 ## Commands
@@ -85,7 +85,7 @@ rig logs api           # Logs for specific service
 
 tmux is the source of truth - no state files.
 
-- Start: `tmux new-session -d -s {group}-{name} -c {cwd} '{command}'`
+- Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
 - Stop: `tmux kill-session -t {group}-{name}`
 - Status: `tmux list-sessions` filtered by group prefix
 
@@ -96,12 +96,12 @@ group: myapp                    # Required. Prefix for tmux sessions
 
 services:
   api:
-    command: deno run -A app.ts # Required. Command to run
-    cwd: ./backend              # Required. Working directory
-    env:                        # Optional. Environment variables
+    command: deno run -A app.ts  # Required. Command to run
+    working_dir: ./backend       # Required. Working directory
+    environment:                 # Optional. Environment variables
       PORT: 3000
       DEBUG: true
-    color: cyan                 # Optional. Log color
+    color: cyan                  # Optional. Log color
 ```
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet

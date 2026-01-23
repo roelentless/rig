@@ -1,5 +1,7 @@
 # Agent Guidelines for rig
 
+**Compose Spec Alignment**: Where it makes sense, we align with the [Compose Specification](https://github.com/compose-spec/compose-spec/blob/main/spec.md) for naming and behavior of new features.
+
 ## Core Philosophy
 
 **Stateless over stateful**: tmux IS the state. Don't add state files. Query reality.
@@ -52,7 +54,7 @@ CLI                    → main(), printUsage()
 
 1. **Orphan processes**: Old processes from different systems won't be in tmux. Port-based cleanup was removed - tmux handles lifecycle properly now.
 
-2. **Path resolution**: `cwd` in config is relative to config file location, not CWD.
+2. **Path resolution**: `working_dir` in config is relative to config file location, not CWD.
 
 3. **Raw mode stdin**: Intercepts Ctrl+C. Must check for byte 3 explicitly.
 

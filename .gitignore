@@ -1,3 +1,5 @@
 .DS_Store
 assets/rig-orig.png
 demo/
+rig.yaml
+rig.yml
