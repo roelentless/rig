@@ -1,17 +1,17 @@
 <div align="center">
-  <img src="assets/kitt.png" alt="Michael Knight managing services" width="600"/>
+  <img src="assets/rig.png" width="600"/>
 </div>
 
-# noc - simple NO-Container service manager
+# rig - tmux-based process manager
 
-A lightweight service manager using tmux. Think docker-compose without Docker, but with more leather jackets.
+A lightweight process manager using tmux. Inspired by docker-compose, but not aiming for compatibility.
 
 ## Features
 
 - **Stateless**: tmux is the source of truth, no state files
-- **Detachable**: services survive terminal close, re-attach anytime
-- **Simple config**: YAML file defines services
-- **Process metrics**: memory, CPU, ports via `ps -a` or `top`
+- **Detachable**: processes survive terminal close, re-attach anytime
+- **Simple config**: YAML file defines processes to run
+- **Metrics**: memory, CPU, ports via `ps -a` or `top`
 
 ## Installation
 
@@ -29,7 +29,7 @@ brew install deno  # macOS
 brew install tmux  # macOS
 ```
 
-**Install noc:**
+**Install rig:**
 
 ```bash
 # From local clone
@@ -42,34 +42,35 @@ deno task uninstall
 ## Quick Start
 
 ```bash
-noc init               # Create noc.yaml
-noc start              # Start all services (foreground)
-noc start -d           # Start detached (background)
-noc stop               # Stop all services
+rig init               # Create rig.yaml
+rig up                 # Start all processes (foreground)
+rig up -d              # Start detached (background)
+rig down               # Stop all processes
 ```
 
 ## Usage
 
 ```bash
-noc init               # Create noc.yaml in current directory
-noc start              # Start all services (foreground, or reconnect if running)
-noc start -d           # Start detached (background)
-noc start api worker   # Start specific services
-noc stop               # Stop all services
-noc restart api        # Restart single service
-noc ps                 # Quick status check (~30ms)
-noc ps -a              # Status with mem/cpu/ports (~800ms)
-noc list               # Alias for ps
-noc top                # Live dashboard (q to exit)
-noc logs               # Dump all logs (alias: tail)
-noc logs -f            # Follow all logs (Ctrl+C to exit)
-noc logs api           # Dump api logs
-noc logs -f api        # Follow api logs
+rig init               # Create rig.yaml in current directory
+rig up                 # Start all processes (foreground, or reconnect if running)
+rig up -d              # Start detached (background)
+rig start api worker   # Start specific processes
+rig down               # Stop all processes
+rig stop api           # Stop specific process
+rig restart api        # Restart single process
+rig ps                 # Quick status check (~30ms)
+rig ps -a              # Status with mem/cpu/ports (~800ms)
+rig list               # Alias for ps
+rig top                # Live dashboard (q to exit)
+rig logs               # Dump all logs (alias: tail)
+rig logs -f            # Follow all logs (Ctrl+C to exit)
+rig logs api           # Dump api logs
+rig logs -f api        # Follow api logs
 ```
 
 ## Configuration
 
-Create `noc.yaml` in your project root:
+Create `rig.yaml` in your project root:
 
 ```yaml
 group: myapp
@@ -102,7 +103,7 @@ Full config with all options:
 group: myapp                    # Required. Prefix for tmux sessions
 
 services:
-  api:                          # Service name
+  api:                          # Process name
     command: deno run -A app.ts # Required. Command to run
     cwd: ./backend              # Required. Working directory (relative or absolute)
     env:                        # Optional. Environment variables

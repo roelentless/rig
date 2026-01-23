@@ -1,11 +1,11 @@
 {
-  "name": "@roel/noc",
-  "version": "0.1.0",
-  "exports": "./noc.ts",
+  "name": "@roelentless/rig",
+  "version": "0.1.2",
+  "exports": "./rig.ts",
   "tasks": {
-    "dev": "deno run -A noc.ts",
-    "test": "deno test -A noc.test.ts",
-    "install": "deno install -A -g -n noc noc.ts",
-    "uninstall": "deno uninstall -g noc"
+    "dev": "deno run -A rig.ts",
+    "test": "deno test -A rig.test.ts",
+    "install": "deno install -A -g -n rig rig.ts",
+    "uninstall": "deno uninstall -g rig"
   }
 }

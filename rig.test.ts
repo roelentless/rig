@@ -1,9 +1,9 @@
 #!/usr/bin/env -S deno test -A
 
 /**
- * Tests for noc - no-containers service manager
+ * Tests for rig - tmux-based process manager
  *
- * Run with: deno test -A noc.test.ts
+ * Run with: deno test -A rig.test.ts
  */
 
 import {
@@ -11,7 +11,7 @@ import {
   assertStringIncludes,
 } from "jsr:@std/assert";
 
-const TEST_GROUP = "noc-test";
+const TEST_GROUP = "rig-test";
 const TEST_CONFIG = `
 group: ${TEST_GROUP}
 
@@ -32,10 +32,10 @@ services:
     color: red
 `;
 
-// Helper to run noc commands
-async function noc(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+// Helper to run rig commands
+async function rig(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const cmd = new Deno.Command("deno", {
-    args: ["run", "-A", "noc.ts", ...args],
+    args: ["run", "-A", "rig.ts", ...args],
     cwd: import.meta.dirname,
   });
   const result = await cmd.output();
@@ -73,13 +73,13 @@ async function cleanupSessions(): Promise<void> {
 
 // Setup: write test config
 async function setupTestConfig(): Promise<void> {
-  await Deno.writeTextFile(`${import.meta.dirname}/noc.yaml`, TEST_CONFIG);
+  await Deno.writeTextFile(`${import.meta.dirname}/rig.yaml`, TEST_CONFIG);
 }
 
 // Teardown: remove test config and cleanup sessions
 async function teardown(): Promise<void> {
   try {
-    await Deno.remove(`${import.meta.dirname}/noc.yaml`);
+    await Deno.remove(`${import.meta.dirname}/rig.yaml`);
   } catch { /* ignore */ }
   await cleanupSessions();
 }
@@ -94,23 +94,23 @@ function stripAnsi(str: string): string {
 }
 
 Deno.test({
-  name: "noc help - shows usage",
+  name: "rig help - shows usage",
   async fn() {
-    const { stdout, code } = await noc(["help"]);
+    const { stdout, code } = await rig(["help"]);
     assertEquals(code, 0);
     const clean = stripAnsi(stdout);
-    assertStringIncludes(clean, "noc - no-containers");
+    assertStringIncludes(clean, "rig - tmux-based process manager");
     assertStringIncludes(clean, "COMMANDS:");
   },
 });
 
 Deno.test({
-  name: "noc start -d - starts services in background",
+  name: "rig start -d - starts processes in background",
   async fn() {
     await setupTestConfig();
     try {
       // Start in detached mode
-      const { code, stdout } = await noc(["start", "-d", "echo-svc"]);
+      const { code, stdout } = await rig(["start", "-d", "echo-svc"]);
       assertEquals(code, 0);
       assertStringIncludes(stdout, "Started echo-svc");
 
@@ -123,15 +123,33 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc ps - shows service status",
+  name: "rig up -d - alias for start",
   async fn() {
     await setupTestConfig();
     try {
-      // Start a service
-      await noc(["start", "-d", "echo-svc"]);
+      // Start in detached mode using up alias
+      const { code, stdout } = await rig(["up", "-d", "echo-svc"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started echo-svc");
+
+      // Verify session exists
+      assertEquals(await sessionExists("echo-svc"), true);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: "rig ps - shows process status",
+  async fn() {
+    await setupTestConfig();
+    try {
+      // Start a process
+      await rig(["start", "-d", "echo-svc"]);
 
       // Check ps output
-      const { code, stdout } = await noc(["ps"]);
+      const { code, stdout } = await rig(["ps"]);
       assertEquals(code, 0);
       assertStringIncludes(stdout, "echo-svc");
       assertStringIncludes(stdout, "running");
@@ -142,15 +160,15 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc stop - stops services",
+  name: "rig stop - stops processes",
   async fn() {
     await setupTestConfig();
     try {
       // Start then stop
-      await noc(["start", "-d", "echo-svc"]);
+      await rig(["start", "-d", "echo-svc"]);
       assertEquals(await sessionExists("echo-svc"), true);
 
-      const { code } = await noc(["stop", "echo-svc"]);
+      const { code } = await rig(["stop", "echo-svc"]);
       assertEquals(code, 0);
 
       // Give tmux a moment to clean up
@@ -165,19 +183,42 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc restart - restarts services",
+  name: "rig down - alias for stop",
   async fn() {
     await setupTestConfig();
     try {
-      // Start service
-      await noc(["start", "-d", "echo-svc"]);
-      const { stdout: ps1 } = await noc(["ps"]);
+      // Start then stop using down alias
+      await rig(["start", "-d", "echo-svc"]);
+      assertEquals(await sessionExists("echo-svc"), true);
+
+      const { code } = await rig(["down", "echo-svc"]);
+      assertEquals(code, 0);
+
+      // Give tmux a moment to clean up
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Session should be gone
+      assertEquals(await sessionExists("echo-svc"), false);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: "rig restart - restarts processes",
+  async fn() {
+    await setupTestConfig();
+    try {
+      // Start process
+      await rig(["start", "-d", "echo-svc"]);
+      const { stdout: ps1 } = await rig(["ps"]);
 
       // Small delay so uptime changes
       await new Promise((r) => setTimeout(r, 1100));
 
       // Restart
-      const { code } = await noc(["restart", "echo-svc"]);
+      const { code } = await rig(["restart", "echo-svc"]);
       assertEquals(code, 0);
 
       // Session should still exist
@@ -189,18 +230,18 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc logs - captures service output",
+  name: "rig logs - captures process output",
   async fn() {
     await setupTestConfig();
     try {
-      // Start service that outputs something
-      await noc(["start", "-d", "echo-svc"]);
+      // Start process that outputs something
+      await rig(["start", "-d", "echo-svc"]);
 
       // Give it time to output
       await new Promise((r) => setTimeout(r, 500));
 
       // Get logs
-      const { code, stdout } = await noc(["logs", "echo-svc"]);
+      const { code, stdout } = await rig(["logs", "echo-svc"]);
       assertEquals(code, 0);
       assertStringIncludes(stdout, "hello from echo-svc");
     } finally {
@@ -210,13 +251,13 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc start - does not duplicate running services",
+  name: "rig start - does not duplicate running processes",
   async fn() {
     await setupTestConfig();
     try {
       // Start twice
-      await noc(["start", "-d", "echo-svc"]);
-      const { stdout } = await noc(["start", "-d", "echo-svc"]);
+      await rig(["start", "-d", "echo-svc"]);
+      const { stdout } = await rig(["start", "-d", "echo-svc"]);
 
       // Should indicate already running
       assertStringIncludes(stdout, "already running");
@@ -227,11 +268,11 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc start - multiple services",
+  name: "rig start - multiple processes",
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stdout } = await noc(["start", "-d", "echo-svc", "counter"]);
+      const { code, stdout } = await rig(["start", "-d", "echo-svc", "counter"]);
       assertEquals(code, 0);
       assertStringIncludes(stdout, "Started echo-svc");
       assertStringIncludes(stdout, "Started counter");
@@ -245,13 +286,13 @@ Deno.test({
 });
 
 Deno.test({
-  name: "noc - unknown service errors",
+  name: "rig - unknown process errors",
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stderr } = await noc(["start", "-d", "nonexistent"]);
+      const { code, stderr } = await rig(["start", "-d", "nonexistent"]);
       assertEquals(code, 1);
-      assertStringIncludes(stderr, "Unknown service");
+      assertStringIncludes(stderr, "Unknown");
     } finally {
       await teardown();
     }

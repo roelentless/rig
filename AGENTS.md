@@ -1,18 +1,18 @@
-# Agent Guidelines for noc
+# Agent Guidelines for rig
 
 ## Core Philosophy
 
 **Stateless over stateful**: tmux IS the state. Don't add state files. Query reality.
 
-**Idempotent operations**: Every command should be safe to run multiple times. `stop` loops through all services even if none are running. `start` checks if already running.
+**Idempotent operations**: Every command should be safe to run multiple times. `stop` loops through all processes even if none are running. `start` checks if already running.
 
-**Let services be independent**: When one service dies, don't kill others. User decides lifecycle (like docker-compose).
+**Let processes be independent**: When one process dies, don't kill others. User decides lifecycle (like docker-compose).
 
 ## Key Learnings
 
 ### tmux
 
-- Session naming convention `{group}-{service}` enables discovery via prefix filtering
+- Session naming convention `{group}-{name}` enables discovery via prefix filtering
 - `remain-on-exit on` preserves crash output for debugging
 - `kill-session` sends SIGHUP → process exits → port released
 - In raw mode, Ctrl+C is byte 3, not SIGINT - must handle explicitly
@@ -25,9 +25,9 @@
 
 ### Performance
 
-- `noc ps` should be instant (~30ms) - don't collect metrics by default
-- `noc ps -a` for full metrics (~800ms acceptable)
-- `noc top` uses smart refresh: high CPU services refresh more often
+- `rig ps` should be instant (~30ms) - don't collect metrics by default
+- `rig ps -a` for full metrics (~800ms acceptable)
+- `rig top` uses smart refresh: high CPU processes refresh more often
 
 ### CLI
 
@@ -62,5 +62,5 @@ CLI                    → main(), printUsage()
 
 - Auto-restart: tmux has `respawn-pane` but adds complexity
 - Log persistence: `pipe-pane` can tee to files
-- Health checks: Custom command per service
+- Health checks: Custom command per process
 - Dependencies: `depends_on` ordering (keep simple for now)

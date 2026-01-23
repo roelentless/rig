@@ -1,12 +1,12 @@
 #!/usr/bin/env -S deno run -A
 
 /**
- * noc - "no-containers"
- * A lightweight service manager using tmux.
+ * rig - A lightweight process manager using tmux.
+ * Inspired by docker-compose, but not aiming for compatibility.
  * No state files - tmux is the source of truth.
  */
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 import { parse as parseYaml } from "jsr:@std/yaml";
 import { parseArgs } from "jsr:@std/cli/parse-args";
@@ -88,7 +88,7 @@ const SERVICE_COLORS = [
   "violet",
 ];
 
-const CONFIG_NAMES = ["noc.yaml", "noc.yml"];
+const CONFIG_NAMES = ["rig.yaml", "rig.yml"];
 
 // Disable colors when not a TTY (piping to other commands)
 const IS_TTY = Deno.stdout.isTerminal();
@@ -136,11 +136,11 @@ function log(msg: string, prefix?: string, color?: string): void {
 }
 
 function logSystem(msg: string): void {
-  log(msg, "noc", "bold");
+  log(msg, "rig", "bold");
 }
 
 function logError(msg: string): void {
-  log(msg, "noc", "red");
+  log(msg, "rig", "red");
 }
 
 function buildEnvString(env: Record<string, string>): string {
@@ -272,7 +272,7 @@ function printTmuxInstallGuide(): void {
   print(`
 ${c("red")}Error: tmux is not installed${c("reset")}
 
-noc requires tmux to manage background processes.
+rig requires tmux to manage background processes.
 
 Install tmux:
 
@@ -527,11 +527,11 @@ async function cmdStart(
   // Validate service names
   for (const name of serviceNames) {
     if (!config.services[name]) {
-      throw new Error(`Unknown service: ${name}`);
+      throw new Error(`Unknown: ${name}`);
     }
   }
 
-  logSystem(`Starting ${serviceNames.length} service(s)...`);
+  logSystem(`Starting ${serviceNames.length} process(es)...`);
 
   // Start all services
   for (const name of serviceNames) {
@@ -539,7 +539,7 @@ async function cmdStart(
   }
 
   if (detached) {
-    logSystem("Services started in background");
+    logSystem("Processes started in background");
     return;
   }
 
@@ -552,7 +552,7 @@ async function monitor(
   config: Config,
   serviceNames: string[]
 ): Promise<void> {
-  logSystem("Monitoring services... (Ctrl+C to stop all)");
+  logSystem("Monitoring processes... (Ctrl+C to stop all)");
 
   const lastLines: Record<string, number> = {};
   const deadServices = new Set<string>();
@@ -564,7 +564,7 @@ async function monitor(
   Deno.addSignalListener("SIGINT", async () => {
     if (!running) return;
     running = false;
-    logSystem("Received SIGINT, stopping all services...");
+    logSystem("Received SIGINT, stopping all processes...");
     await cmdStop(mgr, config, serviceNames);
     Deno.exit(0);
   });
@@ -572,7 +572,7 @@ async function monitor(
   Deno.addSignalListener("SIGTERM", async () => {
     if (!running) return;
     running = false;
-    logSystem("Received SIGTERM, stopping all services...");
+    logSystem("Received SIGTERM, stopping all processes...");
     await cmdStop(mgr, config, serviceNames);
     Deno.exit(0);
   });
@@ -626,9 +626,9 @@ async function cmdStop(
   }
 
   if (stoppedAny) {
-    logSystem("All services stopped");
+    logSystem("All processes stopped");
   } else {
-    logSystem("No services were running");
+    logSystem("No processes were running");
   }
 }
 
@@ -642,11 +642,11 @@ async function cmdRestart(
 
   for (const name of serviceNames) {
     if (!config.services[name]) {
-      throw new Error(`Unknown service: ${name}`);
+      throw new Error(`Unknown: ${name}`);
     }
   }
 
-  logSystem(`Restarting ${serviceNames.length} service(s)...`);
+  logSystem(`Restarting ${serviceNames.length} process(es)...`);
 
   for (const name of serviceNames) {
     await mgr.stop(name);
@@ -816,7 +816,7 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
 
     // Render
     let output = CLEAR;
-    output += `${c("bold")}noc top${c("reset")} - press q or Ctrl+C to exit\n\n`;
+    output += `${c("bold")}rig top${c("reset")} - press q or Ctrl+C to exit\n\n`;
     output += `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
     output += "─".repeat(72) + "\n";
 
@@ -889,7 +889,7 @@ async function cmdLogs(
 
   // Validate service exists
   if (serviceName && !config.services[serviceName]) {
-    logError(`Unknown service: ${serviceName}`);
+    logError(`Unknown: ${serviceName}`);
     Deno.exit(1);
   }
 
@@ -903,7 +903,7 @@ async function cmdLogs(
   }
 
   if (!anyRunning) {
-    logError(serviceName ? `Service '${serviceName}' is not running` : "No services running");
+    logError(serviceName ? `'${serviceName}' is not running` : "No processes running");
     Deno.exit(1);
   }
 
@@ -993,8 +993,8 @@ services:
     cwd: ./frontend
 `;
 
-  await Deno.writeTextFile("noc.yaml", template);
-  logSystem("Created noc.yaml");
+  await Deno.writeTextFile("rig.yaml", template);
+  logSystem("Created rig.yaml");
 }
 
 // ============================================================================
@@ -1003,36 +1003,36 @@ services:
 
 function printUsage(): void {
   print(`
-noc - no-containers service manager
+rig - tmux-based process manager (inspired by docker-compose)
 
 USAGE:
-  noc <command> [options] [services...]
+  rig <command> [options] [names...]
 
 COMMANDS:
-  init                      Create noc.yaml in current directory
-  start [services...]       Start services (foreground, streaming logs)
-  start -d [services...]    Start services in background (detached)
-  stop [services...]        Stop services
-  restart [services...]     Restart services
+  init                      Create rig.yaml in current directory
+  start/up [names...]       Start processes (foreground, streaming logs)
+  start/up -d [names...]    Start processes in background (detached)
+  stop/down [names...]      Stop processes
+  restart [names...]        Restart processes
   ps/list [-a|--all]        Show status (add -a for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
-  logs/tail [-f] [service]  Show logs (all or specific service)
+  logs/tail [-f] [name]     Show logs (all or specific process)
   version                   Show version
 
 EXAMPLES:
-  noc start                 Start all services
-  noc start -d              Start all in background
-  noc start api worker      Start specific services
-  noc stop                  Stop all services
-  noc restart api           Restart single service
-  noc ps                    Show status
-  noc logs                  Dump all logs
-  noc logs -f               Follow all logs (Ctrl+C to exit)
-  noc logs api              Dump api logs
-  noc logs -f api           Follow api logs
+  rig up                    Start all processes
+  rig up -d                 Start all in background
+  rig start api worker      Start specific processes
+  rig down                  Stop all processes
+  rig restart api           Restart single process
+  rig ps                    Show status
+  rig logs                  Dump all logs
+  rig logs -f               Follow all logs (Ctrl+C to exit)
+  rig logs api              Dump api logs
+  rig logs -f api           Follow api logs
 
 CONFIG:
-  Looks for noc.yaml or noc.yml in current directory.
+  Looks for rig.yaml or rig.yml in current directory.
 `);
 }
 
@@ -1062,15 +1062,17 @@ async function main(): Promise<void> {
   }
 
   // Commands that need config
-  if (["start", "stop", "restart", "ps", "list", "top"].includes(command)) {
+  if (["start", "up", "stop", "down", "restart", "ps", "list", "top"].includes(command)) {
     const { config } = await loadConfig();
     const mgr = new SessionManager(config.group);
 
     switch (command) {
       case "start":
+      case "up":
         await cmdStart(mgr, config, services, args.d);
         break;
       case "stop":
+      case "down":
         await cmdStop(mgr, config, services);
         break;
       case "restart":
