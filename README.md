@@ -25,25 +25,24 @@ Processes run in tmux sessions - they survive terminal close and can be reattach
 
 ## Install
 
-**1. Install tmux and deno:**
+**Prerequisites:** tmux and deno
 
 ```bash
 # macOS
-brew install tmux
-curl -fsSL https://deno.land/install.sh | sh
+brew install tmux deno
 
-# Linux (Debian/Ubuntu)
+# Linux
 sudo apt install tmux
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
-**2. Install rig:**
+**Install rig:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | bash
+deno install -Agf -n rig https://raw.githubusercontent.com/roelentless/rig/develop/rig.ts
 ```
 
-Make sure `~/.deno/bin` is in your PATH.
+Ensure `~/.deno/bin` is in your PATH.
 
 ## Configuration
 
@@ -111,7 +110,6 @@ Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pin
 
 ```bash
 deno uninstall -g rig
-rm -rf ~/.rig/repo
 ```
 
 ## License
