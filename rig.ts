@@ -1010,7 +1010,7 @@ services:
 
 function printUsage(): void {
   print(`
-rig - tmux-based process manager (inspired by docker-compose)
+rig - lightweight, tmux-based process manager
 
 USAGE:
   rig <command> [options] [names...]
