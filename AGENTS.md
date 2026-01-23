@@ -26,7 +26,7 @@
 ### Performance
 
 - `rig ps` should be instant (~30ms) - don't collect metrics by default
-- `rig ps -a` for full metrics (~800ms acceptable)
+- `rig ps -f` for full metrics (~800ms acceptable)
 - `rig top` uses smart refresh: high CPU processes refresh more often
 
 ### CLI

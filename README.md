@@ -11,7 +11,7 @@ A lightweight, tmux-based process manager for compose-like workflows without Doc
 - **Stateless**: tmux is the source of truth, no state files
 - **Detachable**: processes survive terminal close, re-attach anytime
 - **Simple config**: YAML file defines processes to run
-- **Metrics**: memory, CPU, ports via `ps -a` or `top`
+- **Metrics**: memory, CPU, ports via `ps -f` or `top`
 
 ## Installation
 
