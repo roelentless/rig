@@ -26,7 +26,7 @@
 ### Performance
 
 - `noc ps` should be instant (~30ms) - don't collect metrics by default
-- `noc ps -s` for full metrics (~800ms acceptable)
+- `noc ps -a` for full metrics (~800ms acceptable)
 - `noc top` uses smart refresh: high CPU services refresh more often
 
 ### CLI

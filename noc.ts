@@ -650,13 +650,13 @@ async function cmdRestart(
   }
 }
 
-async function cmdPs(mgr: SessionManager, config: Config, showStats: boolean): Promise<void> {
+async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Promise<void> {
   const sessions = await mgr.listAll();
   const allServices = Object.keys(config.services);
 
   console.log("");
   
-  if (showStats) {
+  if (showAll) {
     console.log(
       `${COLORS.bold}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME${COLORS.reset}`
     );
@@ -694,7 +694,7 @@ async function cmdPs(mgr: SessionManager, config: Config, showStats: boolean): P
       status = `${COLORS.red}exit(${session.exitCode})${COLORS.reset}`;
     }
 
-    if (showStats) {
+    if (showAll) {
       let mem = "-";
       let cpu = "-";
       let ports = "-";
@@ -954,7 +954,7 @@ ${COLORS.bold}COMMANDS:${COLORS.reset}
   start -d [services...]  Start services in background (detached)
   stop [services...]      Stop services
   restart [services...]   Restart services
-  ps [-s|--stats]         Show status (add -s for mem/cpu/ports)
+  ps/list [-a|--all]      Show status (add -a for mem/cpu/ports)
   top                     Live dashboard with auto-refreshing metrics
   logs <service> [-f]     Show logs (optionally follow)
   attach <service>        Attach to service tmux session
@@ -983,8 +983,8 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "s", "stats", "f", "help", "h"],
-    alias: { s: "stats", h: "help" },
+    boolean: ["d", "a", "all", "f", "help", "h"],
+    alias: { a: "all", h: "help" },
   });
 
   const [command, ...services] = args._ as string[];
@@ -995,7 +995,7 @@ async function main(): Promise<void> {
   }
 
   // Commands that need config
-  if (["start", "stop", "restart", "ps", "top"].includes(command)) {
+  if (["start", "stop", "restart", "ps", "list", "top"].includes(command)) {
     const { config } = await loadConfig();
     const mgr = new SessionManager(config.group);
 
@@ -1010,7 +1010,8 @@ async function main(): Promise<void> {
         await cmdRestart(mgr, config, services);
         break;
       case "ps":
-        await cmdPs(mgr, config, args.stats);
+      case "list":
+        await cmdPs(mgr, config, args.all);
         break;
       case "top":
         await cmdTop(mgr, config);

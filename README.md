@@ -11,9 +11,25 @@ A lightweight service manager using tmux. Think docker-compose without Docker, b
 - **Stateless**: tmux is the source of truth, no state files
 - **Detachable**: services survive terminal close, re-attach anytime
 - **Simple config**: YAML file defines services
-- **Process metrics**: memory, CPU, ports via `ps -s` or `top`
+- **Process metrics**: memory, CPU, ports via `ps -a` or `top`
 
 ## Installation
+
+**Dependencies:**
+
+Requires [Deno](https://docs.deno.com/runtime/getting_started/installation/) and `tmux`:
+
+```bash
+# Install Deno
+curl -fsSL https://deno.land/install.sh | sh  # macOS/Linux
+# or
+brew install deno  # macOS
+
+# Install tmux
+brew install tmux  # macOS
+```
+
+**Install noc:**
 
 ```bash
 # From local clone
@@ -21,11 +37,6 @@ deno task install
 
 # Uninstall
 deno task uninstall
-```
-
-Requires `tmux`:
-```bash
-brew install tmux  # macOS
 ```
 
 ## Quick Start
@@ -47,7 +58,8 @@ noc start api worker   # Start specific services
 noc stop               # Stop all services
 noc restart api        # Restart single service
 noc ps                 # Quick status check (~30ms)
-noc ps -s              # Status with mem/cpu/ports (~800ms)
+noc ps -a              # Status with mem/cpu/ports (~800ms)
+noc list               # Alias for ps
 noc top                # Live dashboard (q to exit)
 noc logs api -f        # Follow logs
 noc attach api         # Attach to tmux session (Ctrl+B, D to detach)
