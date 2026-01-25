@@ -108,7 +108,7 @@ function print(msg: string): void {
   try {
     console.log(msg);
   } catch (e) {
-    if (e instanceof Error && e.message.includes("Broken pipe")) {
+    if (e instanceof Deno.errors.BrokenPipe) {
       Deno.exit(0);
     }
     throw e;
@@ -153,9 +153,26 @@ function getServiceColor(services: Record<string, ServiceDef>, serviceName: stri
   // Allow config override, otherwise use deterministic color by index
   const def = services[serviceName];
   if (def?.color) return def.color;
-  
+
   const index = Object.keys(services).indexOf(serviceName);
   return SERVICE_COLORS[index % SERVICE_COLORS.length];
+}
+
+// Process and print log lines, returning the new line count for tracking
+function processLogLines(
+  logs: string,
+  serviceName: string,
+  color: string,
+  lastLineCount = 0
+): number {
+  const lines = logs.split("\n");
+  const newLines = lastLineCount > 0 ? lines.slice(lastLineCount) : lines;
+  for (const line of newLines) {
+    if (line.trim()) {
+      log(line, serviceName, color);
+    }
+  }
+  return lines.length;
 }
 
 // ============================================================================
@@ -303,8 +320,20 @@ async function findConfig(): Promise<string> {
 
 async function loadConfig(configPath?: string): Promise<{ config: Config; configDir: string }> {
   const path = configPath ?? (await findConfig());
-  const content = await Deno.readTextFile(path);
-  const raw = parseYaml(content) as Record<string, unknown>;
+
+  let content: string;
+  try {
+    content = await Deno.readTextFile(path);
+  } catch (err) {
+    throw new Error(`Failed to read config file '${path}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let raw: Record<string, unknown>;
+  try {
+    raw = parseYaml(content) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(`Invalid YAML in ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (!raw.group || typeof raw.group !== "string") {
     throw new Error("Config must have a 'group' field (string)");
@@ -591,16 +620,8 @@ async function monitor(
       if (deadServices.has(svc)) continue;
 
       const logs = await mgr.logs(svc);
-      const lines = logs.split("\n");
-      const newLines = lines.slice(lastLines[svc]);
-
       const color = getServiceColor(config.services, svc);
-      for (const line of newLines) {
-        if (line.trim()) {
-          log(line, svc, color);
-        }
-      }
-      lastLines[svc] = lines.length;
+      lastLines[svc] = processLogLines(logs, svc, color, lastLines[svc]);
 
       // Check if dead - just report, don't kill others
       const status = await mgr.status(svc);
@@ -937,14 +958,8 @@ async function cmdLogs(
     for (const svc of serviceNames) {
       if (!(await mgr.exists(svc))) continue;
       const logs = await mgr.logs(svc);
-      const lines = logs.split("\n");
       const color = getServiceColor(config.services, svc);
-      for (const line of lines) {
-        if (line.trim()) {
-          log(line, svc, color);
-        }
-      }
-      lastLines[svc] = lines.length;
+      lastLines[svc] = processLogLines(logs, svc, color);
     }
 
     // Follow new output
@@ -954,16 +969,8 @@ async function cmdLogs(
         if (!(await mgr.exists(svc))) continue;
 
         const logs = await mgr.logs(svc);
-        const lines = logs.split("\n");
-        const newLines = lines.slice(lastLines[svc]);
-
         const color = getServiceColor(config.services, svc);
-        for (const line of newLines) {
-          if (line.trim()) {
-            log(line, svc, color);
-          }
-        }
-        lastLines[svc] = lines.length;
+        lastLines[svc] = processLogLines(logs, svc, color, lastLines[svc]);
       }
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -973,11 +980,7 @@ async function cmdLogs(
       if (!(await mgr.exists(svc))) continue;
       const logs = await mgr.logs(svc);
       const color = getServiceColor(config.services, svc);
-      for (const line of logs.split("\n")) {
-        if (line.trim()) {
-          log(line, svc, color);
-        }
-      }
+      processLogLines(logs, svc, color);
     }
   }
 }
@@ -1008,7 +1011,12 @@ services:
     working_dir: ./frontend
 `;
 
-  await Deno.writeTextFile("rig.yaml", template);
+  try {
+    await Deno.writeTextFile("rig.yaml", template);
+  } catch (err) {
+    logError(`Failed to create rig.yaml: ${err instanceof Error ? err.message : String(err)}`);
+    Deno.exit(1);
+  }
   logSystem("Created rig.yaml");
 }
 
@@ -1064,7 +1072,7 @@ async function main(): Promise<void> {
     alias: { f: "full", h: "help", V: "version" },
   });
 
-  const [command, ...services] = args._ as string[];
+  const [command, ...services] = args._.map(String);
 
   if (args.version || command === "version") {
     print(VERSION);
