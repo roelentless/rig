@@ -10,8 +10,7 @@ services:
   api:
     command: deno run -A api.ts
     working_dir: .
-    environment:
-      PORT: 3000
+    env_file: ./api.env
     depends_on: [db]
 
   worker:

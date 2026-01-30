@@ -133,11 +133,30 @@ services:
     environment:                 # Optional. Environment variables
       PORT: 3000
       DEBUG: true
+    env_file: ./api.env          # Optional. Load env from file
     color: cyan                  # Optional. Log color
     depends_on: [db, cache]      # Optional. Start after these services
     healthcheck:                 # Optional. Health check settings
       grace_ms: 500              # Wait before starting dependents
 ```
+
+### env_file
+
+Load environment variables from external files. Supports string or array format:
+
+```yaml
+# Simple form
+env_file: ./app.env
+
+# Array form with required flag
+env_file:
+  - path: ./default.env
+    required: true   # default - error if missing
+  - path: ./override.env
+    required: false  # skip if missing
+```
+
+Files are processed in order. Later files override earlier. Inline `environment` values override `env_file` values.
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet
 

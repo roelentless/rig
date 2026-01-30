@@ -11,6 +11,8 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml@^1.0.11";
 // deno-lint-ignore no-import-prefix
 import { parseArgs } from "jsr:@std/cli@^1.0.25/parse-args";
+// deno-lint-ignore no-import-prefix
+import { parse as parseEnv } from "jsr:@std/dotenv@^0.225";
 
 import { VERSION } from "./version.ts";
 
@@ -22,10 +24,16 @@ interface HealthCheck {
   grace_ms?: number;
 }
 
+interface EnvFileEntry {
+  path: string;
+  required?: boolean;  // defaults to true
+}
+
 interface ServiceDef {
   command: string;
   working_dir: string;
   environment?: Record<string, string>;
+  env_file?: string | EnvFileEntry[];
   color?: string;
   depends_on?: string[];
   healthcheck?: HealthCheck;
@@ -170,6 +178,33 @@ function buildEnvString(env: Record<string, string>): string {
   return Object.entries(env)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(" ");
+}
+
+async function loadEnvFiles(
+  entries: EnvFileEntry[],
+  configDir: string
+): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+
+  for (const entry of entries) {
+    // Resolve path relative to config dir
+    const fullPath = entry.path.startsWith("/")
+      ? entry.path
+      : `${configDir}/${entry.path}`;
+
+    try {
+      const content = await Deno.readTextFile(fullPath);
+      const parsed = parseEnv(content);
+      Object.assign(result, parsed);
+    } catch (err) {
+      if (entry.required !== false) {
+        throw new Error(`Failed to load env file '${entry.path}': ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // required: false - silently skip
+    }
+  }
+
+  return result;
 }
 
 function getServiceColor(services: Record<string, ServiceDef>, serviceName: string): string {
@@ -410,10 +445,36 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
       }
     }
 
+    // Parse env_file and merge with inline environment
+    let envFileEntries: EnvFileEntry[] = [];
+    if (d.env_file) {
+      if (typeof d.env_file === "string") {
+        envFileEntries = [{ path: d.env_file, required: true }];
+      } else if (Array.isArray(d.env_file)) {
+        envFileEntries = (d.env_file as unknown[]).map((entry) => {
+          if (typeof entry === "string") {
+            return { path: entry, required: true };
+          }
+          const e = entry as Record<string, unknown>;
+          return {
+            path: e.path as string,
+            required: e.required !== false,  // default true
+          };
+        });
+      }
+    }
+
+    // Load env files and merge (inline environment overrides env_file)
+    let mergedEnvironment = environment;
+    if (envFileEntries.length > 0) {
+      const envFromFiles = await loadEnvFiles(envFileEntries, configDir);
+      mergedEnvironment = { ...envFromFiles, ...environment };
+    }
+
     services[name] = {
       command: d.command as string,
       working_dir,
-      environment,
+      environment: mergedEnvironment,
       color: d.color as string | undefined,
       depends_on,
       healthcheck,

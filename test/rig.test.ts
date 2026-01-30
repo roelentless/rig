@@ -357,6 +357,128 @@ services:
   },
 });
 
+Deno.test({
+  name: `[${PLATFORM}] rig start - loads env_file variables`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+
+    // Create .env file
+    await Deno.writeTextFile(`${repoRoot}/test.env`, "MY_VAR=from_env_file\n");
+
+    const envConfig = `
+group: ${TEST_GROUP}
+
+services:
+  env-test:
+    command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
+    working_dir: /tmp
+    env_file: ./test.env
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, envConfig);
+
+    try {
+      await rig(["start", "-d", "env-test"]);
+      await delay(500);
+
+      const { stdout } = await rig(["logs", "env-test"]);
+      assertStringIncludes(stdout, "MY_VAR=from_env_file");
+    } finally {
+      await teardown();
+      await Deno.remove(`${repoRoot}/test.env`).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - env_file with required:false skips missing file`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+
+    const optionalEnvConfig = `
+group: ${TEST_GROUP}
+
+services:
+  optional-env:
+    command: sh -c "echo 'started'; sleep 30"
+    working_dir: /tmp
+    env_file:
+      - path: ./nonexistent.env
+        required: false
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, optionalEnvConfig);
+
+    try {
+      // Should succeed even though env file is missing
+      const { code, stdout } = await rig(["start", "-d", "optional-env"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started optional-env");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - inline environment overrides env_file`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+
+    // Create .env file with a variable
+    await Deno.writeTextFile(`${repoRoot}/override.env`, "MY_VAR=from_file\n");
+
+    const overrideConfig = `
+group: ${TEST_GROUP}
+
+services:
+  override-test:
+    command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
+    working_dir: /tmp
+    env_file: ./override.env
+    environment:
+      MY_VAR: from_inline
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, overrideConfig);
+
+    try {
+      await rig(["start", "-d", "override-test"]);
+      await delay(500);
+
+      const { stdout } = await rig(["logs", "override-test"]);
+      // Inline environment should override env_file
+      assertStringIncludes(stdout, "MY_VAR=from_inline");
+    } finally {
+      await teardown();
+      await Deno.remove(`${repoRoot}/override.env`).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - env_file with required:true errors on missing file`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+
+    const requiredEnvConfig = `
+group: ${TEST_GROUP}
+
+services:
+  required-env:
+    command: sh -c "echo 'test'; sleep 30"
+    working_dir: /tmp
+    env_file: ./definitely-missing.env
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, requiredEnvConfig);
+
+    try {
+      const { code, stderr } = await rig(["start", "-d"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Failed to load env file");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
 // Final cleanup
 Deno.test({
   name: `[${PLATFORM}] cleanup`,
