@@ -52,11 +52,18 @@ Create `rig.yaml` somewhere:
 group: myapp
 
 services:
+  db:
+    command: docker run --rm -p 5432:5432 -v myapp-db:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:16
+    working_dir: .
+    healthcheck:
+      grace_ms: 1000          # Wait for postgres to be ready
+
   api:
     command: deno run -A server.ts
     working_dir: ./backend
     environment:
       PORT: 3000
+    depends_on: [db]          # Start after db
 
   web:
     command: npm run dev
@@ -115,12 +122,15 @@ group: myapp                    # Required. Prefix for tmux sessions
 
 services:
   api:
-    command: deno run -A app.ts  # Required. Some command to run
+    command: deno run -A app.ts  # Required. Command to run
     working_dir: ./backend       # Required. Working directory
     environment:                 # Optional. Environment variables
       PORT: 3000
       DEBUG: true
     color: cyan                  # Optional. Log color
+    depends_on: [db, cache]      # Optional. Start after these services
+    healthcheck:                 # Optional. Health check settings
+      grace_ms: 500              # Wait before starting dependents
 ```
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet

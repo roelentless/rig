@@ -15,6 +15,7 @@ import {
   setupTestConfig,
   stripAnsi,
   teardown,
+  TEST_GROUP,
 } from "./_helpers.ts";
 
 // Platform prefix for test names
@@ -236,6 +237,120 @@ Deno.test({
       const pid = parseInt(parts[parts.length - 1], 10);
       assertEquals(isNaN(pid), false, `PID should be a number, got: ${parts[parts.length - 1]}`);
       assertEquals(pid > 0, true, `PID should be positive, got: ${pid}`);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - respects depends_on ordering`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const depsConfig = `
+group: ${TEST_GROUP}
+
+services:
+  db:
+    command: sh -c "echo 'db started'; sleep 30"
+    working_dir: /tmp
+    healthcheck:
+      grace_ms: 200
+
+  api:
+    command: sh -c "echo 'api started'; sleep 30"
+    working_dir: /tmp
+    depends_on: [db]
+
+  worker:
+    command: sh -c "echo 'worker started'; sleep 30"
+    working_dir: /tmp
+    depends_on: [db]
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, depsConfig);
+    try {
+      const { code, stdout } = await rig(["start", "-d"]);
+      assertEquals(code, 0);
+
+      // db should be started first
+      const dbIdx = stdout.indexOf("Started db");
+      const apiIdx = stdout.indexOf("Started api");
+      const workerIdx = stdout.indexOf("Started worker");
+
+      assertEquals(dbIdx !== -1, true, "db should be started");
+      assertEquals(apiIdx !== -1, true, "api should be started");
+      assertEquals(workerIdx !== -1, true, "worker should be started");
+
+      // db must start before api and worker
+      assertEquals(dbIdx < apiIdx, true, "db should start before api");
+      assertEquals(dbIdx < workerIdx, true, "db should start before worker");
+
+      // All sessions should exist
+      assertEquals(await sessionExists("db"), true);
+      assertEquals(await sessionExists("api"), true);
+      assertEquals(await sessionExists("worker"), true);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - healthcheck grace_ms delays dependent services`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const graceConfig = `
+group: ${TEST_GROUP}
+
+services:
+  slow-db:
+    command: sh -c "echo 'slow-db started at '\$(date +%s%3N); sleep 30"
+    working_dir: /tmp
+    healthcheck:
+      grace_ms: 300
+
+  client:
+    command: sh -c "echo 'client started at '\$(date +%s%3N); sleep 30"
+    working_dir: /tmp
+    depends_on: [slow-db]
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, graceConfig);
+    try {
+      const startTime = Date.now();
+      const { code } = await rig(["start", "-d"]);
+      const elapsed = Date.now() - startTime;
+
+      assertEquals(code, 0);
+
+      // Should have waited at least the grace period (200ms buffer for startup overhead)
+      assertEquals(elapsed >= 200, true, `Expected at least 200ms delay, got ${elapsed}ms`);
+
+      assertEquals(await sessionExists("slow-db"), true);
+      assertEquals(await sessionExists("client"), true);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig start - invalid depends_on reference errors`,
+  async fn() {
+    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const invalidConfig = `
+group: ${TEST_GROUP}
+
+services:
+  api:
+    command: sh -c "echo 'api'; sleep 30"
+    working_dir: /tmp
+    depends_on: [nonexistent]
+`;
+    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, invalidConfig);
+    try {
+      const { code, stderr } = await rig(["start", "-d"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "depends on unknown service");
     } finally {
       await teardown();
     }

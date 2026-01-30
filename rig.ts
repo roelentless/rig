@@ -18,11 +18,17 @@ import { VERSION } from "./version.ts";
 // TYPES
 // ============================================================================
 
+interface HealthCheck {
+  grace_ms?: number;
+}
+
 interface ServiceDef {
   command: string;
   working_dir: string;
   environment?: Record<string, string>;
   color?: string;
+  depends_on?: string[];
+  healthcheck?: HealthCheck;
 }
 
 interface Config {
@@ -385,11 +391,32 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
         )
       : undefined;
 
+    // Parse depends_on
+    let depends_on: string[] | undefined;
+    if (d.depends_on) {
+      if (!Array.isArray(d.depends_on)) {
+        throw new Error(`Service '${name}' depends_on must be an array`);
+      }
+      depends_on = d.depends_on as string[];
+    }
+
+    // Parse healthcheck
+    let healthcheck: HealthCheck | undefined;
+    if (d.healthcheck) {
+      const hc = d.healthcheck as Record<string, unknown>;
+      healthcheck = {};
+      if (hc.grace_ms !== undefined) {
+        healthcheck.grace_ms = Number(hc.grace_ms);
+      }
+    }
+
     services[name] = {
       command: d.command as string,
       working_dir,
       environment,
       color: d.color as string | undefined,
+      depends_on,
+      healthcheck,
     };
   }
 
@@ -565,6 +592,78 @@ class SessionManager {
 }
 
 // ============================================================================
+// DEPENDENCY ORDERING
+// ============================================================================
+
+/**
+ * Compute startup order based on depends_on relationships.
+ * Returns services grouped by "level" - services in the same level can start together,
+ * but must wait for previous levels to complete.
+ */
+function computeStartupOrder(
+  services: Record<string, ServiceDef>,
+  requestedNames: string[]
+): string[][] {
+  const requested = new Set(requestedNames);
+
+  // Build dependency graph (only for requested services)
+  const deps: Record<string, Set<string>> = {};
+  for (const name of requestedNames) {
+    deps[name] = new Set();
+    const svcDeps = services[name]?.depends_on ?? [];
+    for (const dep of svcDeps) {
+      // Only include dependencies that are in the requested set
+      if (requested.has(dep)) {
+        deps[name].add(dep);
+      }
+    }
+  }
+
+  // Kahn's algorithm for topological sort with levels
+  const levels: string[][] = [];
+  const remaining = new Set(requestedNames);
+
+  while (remaining.size > 0) {
+    // Find all services with no remaining dependencies
+    const level: string[] = [];
+    for (const name of remaining) {
+      const unresolvedDeps = [...deps[name]].filter((d) => remaining.has(d));
+      if (unresolvedDeps.length === 0) {
+        level.push(name);
+      }
+    }
+
+    if (level.length === 0) {
+      // Circular dependency - just start remaining in any order
+      logSystem("Warning: circular dependency detected, starting remaining services");
+      levels.push([...remaining]);
+      break;
+    }
+
+    levels.push(level);
+    for (const name of level) {
+      remaining.delete(name);
+    }
+  }
+
+  return levels;
+}
+
+/**
+ * Get the maximum grace_ms for a set of services
+ */
+function getMaxGraceMs(services: Record<string, ServiceDef>, names: string[]): number {
+  let maxGrace = 0;
+  for (const name of names) {
+    const grace = services[name]?.healthcheck?.grace_ms ?? 0;
+    if (grace > maxGrace) {
+      maxGrace = grace;
+    }
+  }
+  return maxGrace;
+}
+
+// ============================================================================
 // COMMANDS
 // ============================================================================
 
@@ -584,11 +683,38 @@ async function cmdStart(
     }
   }
 
+  // Validate depends_on references
+  for (const name of serviceNames) {
+    const deps = config.services[name]?.depends_on ?? [];
+    for (const dep of deps) {
+      if (!config.services[dep]) {
+        throw new Error(`Service '${name}' depends on unknown service '${dep}'`);
+      }
+    }
+  }
+
   logSystem(`Starting ${serviceNames.length} process(es)...`);
 
-  // Start all services
-  for (const name of serviceNames) {
-    await mgr.start(name, config.services[name]);
+  // Compute startup order based on dependencies
+  const levels = computeStartupOrder(config.services, serviceNames);
+
+  // Start services level by level
+  for (let i = 0; i < levels.length; i++) {
+    const level = levels[i];
+
+    // Start all services in this level
+    for (const name of level) {
+      await mgr.start(name, config.services[name]);
+    }
+
+    // If there are more levels, wait for grace period before starting next level
+    if (i < levels.length - 1) {
+      const graceMs = getMaxGraceMs(config.services, level);
+      if (graceMs > 0) {
+        logVerbose(`Waiting ${graceMs}ms grace period for: ${level.join(", ")}`);
+        await new Promise((r) => setTimeout(r, graceMs));
+      }
+    }
   }
 
   if (detached) {
