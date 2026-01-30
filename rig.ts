@@ -499,6 +499,36 @@ class SessionManager {
     await cmd.output();
   }
 
+  async kill(service: string): Promise<void> {
+    const session = this.sessionName(service);
+
+    if (!(await this.exists(service))) {
+      return;
+    }
+
+    logSystem(`Killing ${service}...`);
+
+    // Get PID and kill process tree with SIGKILL
+    const status = await this.status(service);
+    if (status.pid) {
+      const pids = await getProcessTree(status.pid);
+      // Concurrent kill - blast them all at once
+      for (const pid of pids) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch {
+          // Already dead, ignore
+        }
+      }
+    }
+
+    // Clean up tmux session
+    const cmd = new Deno.Command("tmux", {
+      args: ["kill-session", "-t", session],
+    });
+    await cmd.output();
+  }
+
   async exists(service: string): Promise<boolean> {
     const session = this.sessionName(service);
     const cmd = new Deno.Command("tmux", {
@@ -796,6 +826,30 @@ async function cmdStop(
 
   if (stoppedAny) {
     logSystem("All processes stopped");
+  } else {
+    logSystem("No processes were running");
+  }
+}
+
+async function cmdKill(
+  mgr: SessionManager,
+  config: Config,
+  names: string[]
+): Promise<void> {
+  const serviceNames =
+    names.length > 0 ? names : Object.keys(config.services);
+
+  let killedAny = false;
+
+  for (const name of serviceNames) {
+    if (await mgr.exists(name)) {
+      await mgr.kill(name);
+      killedAny = true;
+    }
+  }
+
+  if (killedAny) {
+    logSystem("All processes killed");
   } else {
     logSystem("No processes were running");
   }
@@ -1265,7 +1319,8 @@ EXAMPLES:
   rig up                    Start all processes
   rig up -d                 Start all in background
   rig start api worker      Start specific processes
-  rig down                  Stop all processes
+  rig down                  Stop all processes (graceful)
+  rig kill [service...]     Force kill with SIGKILL
   rig restart api           Restart single process
   rig ps                    Show status
   rig logs                  Dump all logs
@@ -1314,7 +1369,7 @@ async function main(): Promise<void> {
   }
 
   // Commands that need config
-  if (["start", "up", "stop", "down", "restart", "ps", "list", "top", "config"].includes(command)) {
+  if (["start", "up", "stop", "down", "kill", "restart", "ps", "list", "top", "config"].includes(command)) {
     try {
       const { config } = await loadConfig();
       const mgr = new SessionManager(config.group);
@@ -1327,6 +1382,9 @@ async function main(): Promise<void> {
         case "stop":
         case "down":
           await cmdStop(mgr, config, services);
+          break;
+        case "kill":
+          await cmdKill(mgr, config, services);
           break;
         case "restart":
           await cmdRestart(mgr, config, services);

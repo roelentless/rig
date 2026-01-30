@@ -16,7 +16,8 @@ A lightweight, tmux-based process manager for compose-like workflows without Doc
 rig init      # Creates rig.yaml config
 rig up        # Start all processes, stream logs (Ctrl+C stops all)
 rig up -d     # Start in background (detached)
-rig down      # Stop all processes
+rig down      # Stop all processes (graceful)
+rig kill      # Force kill with SIGKILL
 rig ps        # Show status
 rig logs -f   # Follow logs
 ```
@@ -84,7 +85,8 @@ COMMANDS:
   init                      Create rig.yaml in current directory
   start/up [names...]       Start processes (foreground, streaming logs)
   start/up -d [names...]    Start processes in background (detached)
-  stop/down [names...]      Stop processes
+  stop/down [names...]      Stop processes (graceful)
+  kill [names...]           Force kill with SIGKILL
   restart [names...]        Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
@@ -99,7 +101,9 @@ EXAMPLES:
   rig up                    Start all processes
   rig up -d                 Start all in background
   rig start api worker      Start specific processes
-  rig down                  Stop all processes
+  rig down                  Stop all processes (graceful)
+  rig kill                  Force kill all processes
+  rig kill api              Force kill specific process
   rig restart api           Restart single process
   rig ps                    Show status
   rig logs                  Dump all logs
@@ -148,7 +152,8 @@ deno uninstall -g rig
 tmux is the source of truth - no state files.
 
 - Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
-- Stop: `tmux kill-session -t {group}-{name}`
+- Stop: `tmux kill-session -t {group}-{name}` (sends SIGHUP)
+- Kill: `SIGKILL` to process tree, then cleanup tmux session
 - Status: `tmux list-sessions` filtered by group prefix
 
 ## License
