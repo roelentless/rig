@@ -1004,14 +1004,10 @@ async function cmdInit(): Promise<void> {
 
 services:
   api:
-    command: deno run -A server.ts
-    working_dir: ./backend
+    command: npm start
+    working_dir: ./somewhere
     environment:
-      PORT: "3000"
-
-  web:
-    command: npm run dev
-    working_dir: ./frontend
+      PORT: 3000
 `;
 
   try {
