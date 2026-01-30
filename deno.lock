@@ -4,9 +4,11 @@
     "jsr:@std/assert@*": "1.0.16",
     "jsr:@std/cli@*": "1.0.25",
     "jsr:@std/cli@1": "1.0.25",
+    "jsr:@std/cli@^1.0.25": "1.0.25",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/yaml@*": "1.0.11",
-    "jsr:@std/yaml@1": "1.0.11"
+    "jsr:@std/yaml@1": "1.0.11",
+    "jsr:@std/yaml@^1.0.11": "1.0.11"
   },
   "jsr": {
     "@std/assert@1.0.16": {
@@ -24,5 +26,11 @@
     "@std/yaml@1.0.11": {
       "integrity": "bd139ce77f2d06cbed3713c8b26d301d2a2e12ecc7986130a268107e212143ee"
     }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@std/cli@^1.0.25",
+      "jsr:@std/yaml@^1.0.11"
+    ]
   }
 }

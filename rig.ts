@@ -6,10 +6,12 @@
  * No state files - tmux is the source of truth.
  */
 
-const VERSION = "0.1.4";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { parseArgs } from "@std/cli/parse-args";
 
-import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml@1";
-import { parseArgs } from "jsr:@std/cli@1/parse-args";
+// Load version from deno.json
+const denoConfigPath = new URL("./deno.json", import.meta.url);
+const denoConfig = JSON.parse(await Deno.readTextFile(denoConfigPath));
 
 // ============================================================================
 // TYPES
@@ -1147,7 +1149,7 @@ async function main(): Promise<void> {
   const services = servicesRaw.flatMap((s) => s.split(",").map((n) => n.trim()).filter((n) => n.length > 0));
 
   if (args.version || command === "version") {
-    print(VERSION);
+    print(denoConfig.version);
     Deno.exit(0);
   }
 
