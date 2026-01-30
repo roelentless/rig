@@ -105,14 +105,6 @@ CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
 ```
 
-## How it works
-
-tmux is the source of truth - no state files.
-
-- Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
-- Stop: `tmux kill-session -t {group}-{name}`
-- Status: `tmux list-sessions` filtered by group prefix
-
 ## Config reference
 
 ```yaml
@@ -120,7 +112,7 @@ group: myapp                    # Required. Prefix for tmux sessions
 
 services:
   api:
-    command: deno run -A app.ts  # Required. Command to run
+    command: deno run -A app.ts  # Required. Some command to run
     working_dir: ./backend       # Required. Working directory
     environment:                 # Optional. Environment variables
       PORT: 3000
@@ -135,6 +127,14 @@ Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pin
 ```bash
 deno uninstall -g rig
 ```
+
+## How it works
+
+tmux is the source of truth - no state files.
+
+- Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
+- Stop: `tmux kill-session -t {group}-{name}`
+- Status: `tmux list-sessions` filtered by group prefix
 
 ## License
 
