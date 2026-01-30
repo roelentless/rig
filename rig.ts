@@ -8,7 +8,7 @@
 
 const VERSION = "0.1.4";
 
-import { parse as parseYaml } from "jsr:@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml";
 import { parseArgs } from "jsr:@std/cli/parse-args";
 
 // ============================================================================
@@ -1020,6 +1020,70 @@ services:
   logSystem("Created rig.yaml");
 }
 
+function cmdConfig(config: Config, serviceNames: string[], raw: boolean, json: boolean): void {
+  const servicesToShow =
+    serviceNames.length > 0
+      ? serviceNames.filter((s) => config.services[s])
+      : Object.keys(config.services);
+
+  if (servicesToShow.length === 0) {
+    logError("No matching services found");
+    return;
+  }
+
+  if (raw || json) {
+    const output: Config = {
+      group: config.group,
+      services: {},
+    };
+
+    for (const name of servicesToShow) {
+      const def = config.services[name];
+      const cleanDef: Record<string, unknown> = {};
+      
+      for (const [key, value] of Object.entries(def)) {
+        if (value !== undefined) {
+          cleanDef[key] = value;
+        }
+      }
+      
+      output.services[name] = cleanDef as unknown as ServiceDef;
+    }
+
+    if (json) {
+      print(JSON.stringify(output, null, 2));
+    } else {
+      print(stringifyYaml(output));
+    }
+    return;
+  }
+
+  const skip = new Set(["command", "color"]);
+  const cwd = Deno.cwd();
+
+  for (const name of servicesToShow) {
+    const def = config.services[name];
+    const color = getServiceColor(config.services, name);
+
+    const props: string[] = [];
+    for (const [key, value] of Object.entries(def)) {
+      if (!value || skip.has(key)) continue;
+      if (Array.isArray(value)) {
+        props.push(`${key}=[${value.join(",")}]`);
+      } else if (typeof value === "object") {
+        for (const [k, v] of Object.entries(value)) props.push(`${k}=${v}`);
+      } else {
+        let v = String(value);
+        if (v.startsWith(cwd + "/")) v = v.slice(cwd.length + 1);
+        props.push(`${key}=${v}`);
+      }
+    }
+
+    const propsStr = props.length > 0 ? ` ${c("dim")}${props.join(" ")}${c("reset")}` : "";
+    print(`${c(color)}${name.padEnd(12)}${c("reset")} ${def.command}${propsStr}`);
+  }
+}
+
 // ============================================================================
 // CLI
 // ============================================================================
@@ -1040,6 +1104,7 @@ COMMANDS:
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
   logs/tail [-f] [name]     Show logs (all or specific process)
+  config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
   version                   Show version
 
 EXAMPLES:
@@ -1053,6 +1118,12 @@ EXAMPLES:
   rig logs -f               Follow all logs (Ctrl+C to exit)
   rig logs api              Dump api logs
   rig logs -f api           Follow api logs
+  rig config                Show all tmux commands
+  rig config --raw          Show raw YAML config
+  rig config --json         Show raw JSON config
+  rig config api            Show command for specific process
+  rig config --raw api      Show raw YAML for specific service
+  rig config --json api     Show raw JSON for specific service
 
 CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
@@ -1068,11 +1139,12 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "f", "full", "help", "h", "V", "version"],
+    boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json"],
     alias: { f: "full", h: "help", V: "version" },
   });
 
-  const [command, ...services] = args._.map(String);
+  const [command, ...servicesRaw] = args._.map(String);
+  const services = servicesRaw.flatMap((s) => s.split(",").map((n) => n.trim()).filter((n) => n.length > 0));
 
   if (args.version || command === "version") {
     print(VERSION);
@@ -1085,7 +1157,7 @@ async function main(): Promise<void> {
   }
 
   // Commands that need config
-  if (["start", "up", "stop", "down", "restart", "ps", "list", "top"].includes(command)) {
+  if (["start", "up", "stop", "down", "restart", "ps", "list", "top", "config"].includes(command)) {
     try {
       const { config } = await loadConfig();
       const mgr = new SessionManager(config.group);
@@ -1108,6 +1180,9 @@ async function main(): Promise<void> {
           break;
         case "top":
           await cmdTop(mgr, config);
+          break;
+        case "config":
+          cmdConfig(config, services, args.raw, args.json);
           break;
       }
     } catch (err) {
