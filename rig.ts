@@ -1304,7 +1304,8 @@ COMMANDS:
   init                      Create rig.yaml in current directory
   start/up [names...]       Start processes (foreground, streaming logs)
   start/up -d [names...]    Start processes in background (detached)
-  stop/down [names...]      Stop processes
+  stop/down [names...]      Stop processes (graceful)
+  kill [names...]           Force kill with SIGKILL
   restart [names...]        Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
@@ -1320,7 +1321,8 @@ EXAMPLES:
   rig up -d                 Start all in background
   rig start api worker      Start specific processes
   rig down                  Stop all processes (graceful)
-  rig kill [service...]     Force kill with SIGKILL
+  rig kill                  Force kill all processes
+  rig kill api              Force kill specific process
   rig restart api           Restart single process
   rig ps                    Show status
   rig logs                  Dump all logs
