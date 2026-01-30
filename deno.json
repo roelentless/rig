@@ -9,5 +9,12 @@
     "test:linux": "docker build -f test/Dockerfile -t rig-test-linux . && docker run --rm rig-test-linux",
     "install": "deno install -A -g -n rig rig.ts",
     "uninstall": "deno uninstall -g rig"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "rig.ts"
+    ]
   }
 }

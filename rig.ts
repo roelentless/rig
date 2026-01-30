@@ -8,8 +8,8 @@
 
 const VERSION = "0.1.4";
 
-import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml";
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml@1";
+import { parseArgs } from "jsr:@std/cli@1/parse-args";
 
 // ============================================================================
 // TYPES

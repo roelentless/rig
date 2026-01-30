@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/rig.png" width="600"/>
+  <img src="https://raw.githubusercontent.com/roelentless/rig/develop/assets/rig.png" width="600"/>
 </div>
 
 # rig
@@ -7,7 +7,7 @@
 A lightweight, tmux-based process manager for compose-like workflows without Docker. Built for speed and simplicity.
 
 <div align="center">
-  <img src="assets/cli.gif" width="600"/>
+  <img src="https://raw.githubusercontent.com/roelentless/rig/develop/assets/cli.gif" width="600"/>
 </div>
 
 ## What it does
@@ -39,7 +39,7 @@ curl -fsSL https://deno.land/install.sh | sh
 **Install rig:**
 
 ```bash
-deno install -Agf -n rig https://raw.githubusercontent.com/roelentless/rig/develop/rig.ts
+deno install -Agf -n rig jsr:@roelentless/rig
 ```
 
 Ensure `~/.deno/bin` is in your PATH.
