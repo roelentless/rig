@@ -36,21 +36,13 @@ sudo apt install tmux
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
-**Install rig:**
+**Install or upgrade rig:**
 
 ```bash
-deno install -Agf -n rig jsr:@roelentless/rig
+deno install -Agf -n rig --reload=https://jsr.io/@roelentless/rig jsr:@roelentless/rig
 ```
 
 Ensure `~/.deno/bin` is in your PATH.
-
-**To upgrade:**
-
-**Note:** Deno ignores `-f` and keeps on using cache. Uninstall first:
-```bash
-deno uninstall rig
-deno install -Agf -n rig jsr:@roelentless/rig
-```
 
 ## Configuration
 
