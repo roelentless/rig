@@ -70,6 +70,8 @@ services:
     working_dir: ./frontend
 ```
 
+See the [example/](example/) folder for a working configuration.
+
 ## Commands
 
 ```

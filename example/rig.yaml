@@ -1,0 +1,24 @@
+group: example
+
+services:
+  db:
+    command: deno run -A db.ts
+    working_dir: .
+    healthcheck:
+      grace_ms: 500
+
+  api:
+    command: deno run -A api.ts
+    working_dir: .
+    environment:
+      PORT: 3000
+    depends_on: [db]
+
+  worker:
+    command: deno run -A worker.ts
+    working_dir: .
+    depends_on: [db]
+
+  web:
+    command: deno run -A web.ts
+    working_dir: .
