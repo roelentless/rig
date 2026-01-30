@@ -96,6 +96,14 @@ const CONFIG_NAMES = ["rig.yaml", "rig.yml"];
 // Disable colors when not a TTY (piping to other commands)
 const IS_TTY = Deno.stdout.isTerminal();
 
+// ASCII key codes for cmdTop
+const KEY_Q_LOWER = 113;
+const KEY_Q_UPPER = 81;
+const KEY_CTRL_C = 3;
+
+// Global verbose flag
+let VERBOSE = false;
+
 // ============================================================================
 // UTILITIES
 // ============================================================================
@@ -144,6 +152,12 @@ function logSystem(msg: string): void {
 
 function logError(msg: string): void {
   log(msg, "rig", "red");
+}
+
+function logVerbose(msg: string): void {
+  if (VERBOSE) {
+    log(msg, "rig", "dim");
+  }
 }
 
 function buildEnvString(env: Record<string, string>): string {
@@ -201,8 +215,8 @@ async function getProcessTree(rootPid: number): Promise<number[]> {
           }
         }
       }
-    } catch {
-      // Process might be dead
+    } catch (err) {
+      logVerbose(`pgrep failed for parent PID ${parentPid}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -233,8 +247,8 @@ async function getProcessMetrics(rootPid: number): Promise<ProcessMetrics> {
           totalCpu += parseFloat(parts[2]) || 0;
         }
       }
-    } catch {
-      // ps failed
+    } catch (err) {
+      logVerbose(`ps command failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -261,8 +275,8 @@ async function getProcessMetrics(rootPid: number): Promise<ProcessMetrics> {
           }
         }
       }
-    } catch {
-      // lsof failed
+    } catch (err) {
+      logVerbose(`lsof command failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -598,23 +612,21 @@ async function monitor(
   for (const svc of serviceNames) lastLines[svc] = 0;
 
   let running = true;
+  let stopping = false;
 
-  // Handle Ctrl+C
-  Deno.addSignalListener("SIGINT", async () => {
+  // Handle Ctrl+C - ensure only one signal handler executes cleanup
+  const handleShutdown = async (signal: string) => {
+    if (stopping) return;
+    stopping = true;
     if (!running) return;
     running = false;
-    logSystem("Received SIGINT, stopping all processes...");
+    logSystem(`Received ${signal}, stopping all processes...`);
     await cmdStop(mgr, config, serviceNames);
     Deno.exit(0);
-  });
+  };
 
-  Deno.addSignalListener("SIGTERM", async () => {
-    if (!running) return;
-    running = false;
-    logSystem("Received SIGTERM, stopping all processes...");
-    await cmdStop(mgr, config, serviceNames);
-    Deno.exit(0);
-  });
+  Deno.addSignalListener("SIGINT", () => handleShutdown("SIGINT"));
+  Deno.addSignalListener("SIGTERM", () => handleShutdown("SIGTERM"));
 
   // Poll loop
   while (running) {
@@ -788,10 +800,17 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
   const SHOW_CURSOR = "\x1b[?25h";
 
   let running = true;
+  let cleanedUp = false;
 
   function cleanup() {
+    if (cleanedUp) return;
+    cleanedUp = true;
     running = false;
-    Deno.stdin.setRaw(false);
+    try {
+      Deno.stdin.setRaw(false);
+    } catch (err) {
+      logVerbose(`Failed to restore stdin: ${err instanceof Error ? err.message : String(err)}`);
+    }
     // Clear screen and restore cursor on exit (like regular top)
     Deno.stdout.writeSync(new TextEncoder().encode(CLEAR + SHOW_CURSOR));
   }
@@ -802,119 +821,126 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
     Deno.exit(0);
   });
 
-  // Set up raw mode to capture keypresses
-  Deno.stdin.setRaw(true);
-  
-  // Non-blocking key reader
-  const keyReader = async () => {
-    const buf = new Uint8Array(1);
-    while (running) {
-      try {
-        const n = await Deno.stdin.read(buf);
-        if (n === null) break;
-        // 'q', 'Q', or Ctrl+C (byte 3)
-        if (buf[0] === 113 || buf[0] === 81 || buf[0] === 3) {
-          cleanup();
-          Deno.exit(0);
-        }
-      } catch {
-        break;
-      }
-    }
-  };
-  keyReader(); // Start listening (don't await)
-
-  Deno.stdout.writeSync(new TextEncoder().encode(HIDE_CURSOR));
-
-  let tick = 0;
-
-  while (running) {
-    const now = Date.now();
-
-    // Update session status for all services (cheap operation)
-    const sessionList = await mgr.listAll();
-    for (const svc of allServices) {
-      const session = sessionList.find((s) => s.name === svc);
-      sessions[svc] = session ?? { name: svc, running: false };
-    }
-
-    // Smart refresh: update 2-3 services per tick based on their refresh interval
-    let updated = 0;
-    for (const svc of allServices) {
-      if (!sessions[svc]?.running || !sessions[svc]?.pid) continue;
-      
-      const interval = getRefreshInterval(svc);
-      const timeSinceUpdate = now - metrics[svc].lastUpdate;
-      
-      if (timeSinceUpdate >= interval && updated < 3) {
-        const m = await getProcessMetrics(sessions[svc].pid!);
-        metrics[svc] = { ...m, lastUpdate: now };
-        updated++;
-      }
-    }
-
-    // Render
-    let output = CLEAR;
-    output += `${c("bold")}rig top${c("reset")} - press q or Ctrl+C to exit\n\n`;
-    output += `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
-    output += "─".repeat(72) + "\n";
-
-    for (const svc of allServices) {
-      const session = sessions[svc];
-      const m = metrics[svc];
-      
-      let status: string;
-      let mem = "-";
-      let cpu = "-";
-      let ports = "-";
-      let started = "-";
-
-      if (!session || !session.running) {
-        if (session?.exitCode !== undefined) {
-          status = `${c("red")}exit(${session.exitCode})${c("reset")}`;
-        } else {
-          status = `${c("dim")}stopped${c("reset")}`;
-        }
-      } else {
-        status = `${c("green")}running${c("reset")}`;
-        mem = `${m.memoryMB}M`;
-        
-        // Color CPU based on usage
-        if (m.cpuPercent > 50) {
-          cpu = `${c("red")}${m.cpuPercent}%${c("reset")}`;
-        } else if (m.cpuPercent > 10) {
-          cpu = `${c("yellow")}${m.cpuPercent}%${c("reset")}`;
-        } else {
-          cpu = `${m.cpuPercent}%`;
-        }
-        
-        ports = m.ports.length > 0 ? m.ports.slice(0, 3).join(",") : "-";
-        if (m.ports.length > 3) ports += "...";
-
-        if (session.created) {
-          const date = new Date(session.created * 1000);
-          started = date.toLocaleTimeString("en-US", {
-            hour12: false,
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          });
-        }
-      }
-
-      const svcCol = svc.padEnd(14);
-      const statusCol = status.padEnd(20);
-      const memCol = mem.padStart(5);
-      const cpuCol = cpu.padEnd(10);
-      const portsCol = ports.padEnd(16);
-
-      output += `${svcCol} ${statusCol} ${memCol} ${cpuCol} ${portsCol} ${started}\n`;
-    }
-
-    Deno.stdout.writeSync(new TextEncoder().encode(output));
+  try {
+    // Set up raw mode to capture keypresses
+    Deno.stdin.setRaw(true);
     
-    tick++;
-    await new Promise((r) => setTimeout(r, 500));
+    // Non-blocking key reader
+    const keyReader = async () => {
+      const buf = new Uint8Array(1);
+      while (running) {
+        try {
+          const n = await Deno.stdin.read(buf);
+          if (n === null) break;
+          // 'q', 'Q', or Ctrl+C
+          if (buf[0] === KEY_Q_LOWER || buf[0] === KEY_Q_UPPER || buf[0] === KEY_CTRL_C) {
+            cleanup();
+            Deno.exit(0);
+          }
+        } catch (err) {
+          logVerbose(`Key reader error: ${err instanceof Error ? err.message : String(err)}`);
+          break;
+        }
+      }
+    };
+    keyReader().catch((err) => {
+      logVerbose(`Key reader failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    Deno.stdout.writeSync(new TextEncoder().encode(HIDE_CURSOR));
+
+    let tick = 0;
+
+    while (running) {
+      const now = Date.now();
+
+      // Update session status for all services (cheap operation)
+      const sessionList = await mgr.listAll();
+      for (const svc of allServices) {
+        const session = sessionList.find((s) => s.name === svc);
+        sessions[svc] = session ?? { name: svc, running: false };
+      }
+
+      // Smart refresh: update 2-3 services per tick based on their refresh interval
+      let updated = 0;
+      for (const svc of allServices) {
+        if (!sessions[svc]?.running || !sessions[svc]?.pid) continue;
+        
+        const interval = getRefreshInterval(svc);
+        const timeSinceUpdate = now - metrics[svc].lastUpdate;
+        
+        if (timeSinceUpdate >= interval && updated < 3) {
+          const m = await getProcessMetrics(sessions[svc].pid!);
+          metrics[svc] = { ...m, lastUpdate: now };
+          updated++;
+        }
+      }
+
+      // Render
+      let output = CLEAR;
+      output += `${c("bold")}rig top${c("reset")} - press q or Ctrl+C to exit\n\n`;
+      output += `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
+      output += "─".repeat(72) + "\n";
+
+      for (const svc of allServices) {
+        const session = sessions[svc];
+        const m = metrics[svc];
+        
+        let status: string;
+        let mem = "-";
+        let cpu = "-";
+        let ports = "-";
+        let started = "-";
+
+        if (!session || !session.running) {
+          if (session?.exitCode !== undefined) {
+            status = `${c("red")}exit(${session.exitCode})${c("reset")}`;
+          } else {
+            status = `${c("dim")}stopped${c("reset")}`;
+          }
+        } else {
+          status = `${c("green")}running${c("reset")}`;
+          mem = `${m.memoryMB}M`;
+          
+          // Color CPU based on usage
+          if (m.cpuPercent > 50) {
+            cpu = `${c("red")}${m.cpuPercent}%${c("reset")}`;
+          } else if (m.cpuPercent > 10) {
+            cpu = `${c("yellow")}${m.cpuPercent}%${c("reset")}`;
+          } else {
+            cpu = `${m.cpuPercent}%`;
+          }
+          
+          ports = m.ports.length > 0 ? m.ports.slice(0, 3).join(",") : "-";
+          if (m.ports.length > 3) ports += "...";
+
+          if (session.created) {
+            const date = new Date(session.created * 1000);
+            started = date.toLocaleTimeString("en-US", {
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            });
+          }
+        }
+
+        const svcCol = svc.padEnd(14);
+        const statusCol = status.padEnd(20);
+        const memCol = mem.padStart(5);
+        const cpuCol = cpu.padEnd(10);
+        const portsCol = ports.padEnd(16);
+
+        output += `${svcCol} ${statusCol} ${memCol} ${cpuCol} ${portsCol} ${started}\n`;
+      }
+
+      Deno.stdout.writeSync(new TextEncoder().encode(output));
+      
+      tick++;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } finally {
+    cleanup();
   }
 }
 
@@ -1106,6 +1132,9 @@ COMMANDS:
   config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
   version                   Show version
 
+OPTIONS:
+  -v, --verbose             Enable verbose logging for debugging
+
 EXAMPLES:
   rig up                    Start all processes
   rig up -d                 Start all in background
@@ -1138,9 +1167,12 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json"],
-    alias: { f: "full", h: "help", V: "version" },
+    boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json", "verbose", "v"],
+    alias: { f: "full", h: "help", V: "version", v: "verbose" },
   });
+
+  // Set global verbose flag
+  VERBOSE = args.verbose;
 
   const [command, ...servicesRaw] = args._.map(String);
   const services = servicesRaw.flatMap((s) => s.split(",").map((n) => n.trim()).filter((n) => n.length > 0));

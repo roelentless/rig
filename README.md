@@ -46,7 +46,7 @@ Ensure `~/.deno/bin` is in your PATH.
 
 ## Configuration
 
-Create `rig.yaml` in your project:
+Create `rig.yaml` somewhere:
 
 ```yaml
 group: myapp
@@ -82,6 +82,9 @@ COMMANDS:
   logs/tail [-f] [name]     Show logs (all or specific process)
   config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
   version                   Show version
+
+OPTIONS:
+  -v, --verbose             Enable verbose logging for debugging
 
 EXAMPLES:
   rig up                    Start all processes

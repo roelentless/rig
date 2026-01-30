@@ -1,9 +1,9 @@
 #!/usr/bin/env -S deno test -A
 
 /**
- * rig tests for macOS (darwin)
+ * rig tests - runs on both macOS and Linux
  *
- * Run with: deno test -A test/darwin.test.ts
+ * Run with: deno test -A test/rig.test.ts
  */
 
 import {
@@ -17,12 +17,11 @@ import {
   teardown,
 } from "./_helpers.ts";
 
-// Skip if not on darwin
-const IS_DARWIN = Deno.build.os === "darwin";
+// Platform prefix for test names
+const PLATFORM = Deno.build.os;
 
 Deno.test({
-  name: "[darwin] rig help - shows usage",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig help - shows usage`,
   async fn() {
     const { stdout, code } = await rig(["help"]);
     assertEquals(code, 0);
@@ -33,8 +32,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig start -d - starts processes in background",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig start -d - starts processes in background`,
   async fn() {
     await setupTestConfig();
     try {
@@ -49,8 +47,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig up -d - alias for start",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig up -d - alias for start`,
   async fn() {
     await setupTestConfig();
     try {
@@ -65,8 +62,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig ps - shows process status",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig ps - shows process status`,
   async fn() {
     await setupTestConfig();
     try {
@@ -82,8 +78,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig stop - stops processes",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig stop - stops processes`,
   async fn() {
     await setupTestConfig();
     try {
@@ -102,8 +97,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig down - alias for stop",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig down - alias for stop`,
   async fn() {
     await setupTestConfig();
     try {
@@ -122,8 +116,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig restart - restarts processes",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig restart - restarts processes`,
   async fn() {
     await setupTestConfig();
     try {
@@ -140,8 +133,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig logs - captures process output",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig logs - captures process output`,
   async fn() {
     await setupTestConfig();
     try {
@@ -158,8 +150,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig start - does not duplicate running processes",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig start - does not duplicate running processes`,
   async fn() {
     await setupTestConfig();
     try {
@@ -173,8 +164,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig start - multiple processes",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig start - multiple processes`,
   async fn() {
     await setupTestConfig();
     try {
@@ -192,8 +182,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig - unknown process errors",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig - unknown process errors`,
   async fn() {
     await setupTestConfig();
     try {
@@ -207,8 +196,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "[darwin] rig ps -f - shows full metrics with valid values",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] rig ps -f - shows full metrics with valid values`,
   async fn() {
     await setupTestConfig();
     try {
@@ -232,7 +220,6 @@ Deno.test({
       }
 
       // Parse the line: SERVICE STATUS MEM CPU PORTS UPTIME PID
-      // Example: "echo-svc     running      5M  0.1%  -                1s         1234"
       const parts = echoLine.trim().split(/\s+/);
       assertEquals(parts[0], "echo-svc");
       assertEquals(parts[1], "running");
@@ -257,8 +244,7 @@ Deno.test({
 
 // Final cleanup
 Deno.test({
-  name: "[darwin] cleanup",
-  ignore: !IS_DARWIN,
+  name: `[${PLATFORM}] cleanup`,
   async fn() {
     await teardown();
   },

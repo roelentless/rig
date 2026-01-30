@@ -75,51 +75,39 @@ exec deno run --allow-all --no-config 'file:///path/to/rig/rig.ts' "$@"
 
 ## Testing
 
-Tests are organized by platform in the `test/` folder.
+Tests use a single unified test file that runs on both macOS and Linux.
 
-### Quick feedback loop (Mac only)
+### Quick feedback loop
 
-During development, test quickly with Mac-only tests:
+During development, test locally on your platform:
 
 ```sh
-deno task test:darwin
+deno task test
 ```
 
-This is sufficient for rapid iteration and validation. Docker tests are slower.
+This runs the full test suite on your current platform and is sufficient for rapid iteration.
 
 ### Validate all platforms after task completion
 
-After completing any task, **always** run both platform tests to ensure cross-platform compatibility:
+After completing any task, **always** validate on Linux via Docker to ensure cross-platform compatibility:
 
 ```sh
-deno task test:darwin  # Fast Mac validation
-deno task test:linux   # Slower Docker validation
+deno task test         # Fast local validation
+deno task test:docker  # Slower Docker validation (~15-20s)
 ```
 
-The Linux tests run in Docker and take ~15-20s due to container build. Both must pass.
-
-### Test maintenance
-
-When modifying `rig.ts`:
-- Update both `darwin.test.ts` and `linux.test.ts` with identical test logic
-- Tests should have identical assertions (only platform detection differs)
-- Validate both platforms pass before considering the task complete
+Both must pass before considering the task complete.
 
 ### Test structure
 
 ```
 test/
-  _helpers.ts       # Shared utilities (rig runner, tmux helpers, config)
-  darwin.test.ts    # macOS-specific tests
-  linux.test.ts     # Linux-specific tests (run in Docker)
-  Dockerfile        # Linux test environment
+  _helpers.ts     # Shared utilities (rig runner, tmux helpers, config)
+  rig.test.ts     # Unified tests (run on both macOS and Linux)
+  Dockerfile      # Linux test environment for Docker
 ```
 
-### Run all tests
-
-```sh
-deno task test  # Runs current platform only
-```
+Tests automatically detect the platform via `Deno.build.os` and prefix test names accordingly.
 
 ## Future Considerations
 

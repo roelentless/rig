@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy source files (skip lockfile for cross-version compatibility)
-COPY rig.ts deno.json ./
+COPY rig.ts version.ts deno.json ./
 COPY test/ ./test/
 
 # Cache dependencies
-RUN deno cache rig.ts test/linux.test.ts
+RUN deno cache rig.ts test/rig.test.ts
 
-# Run Linux tests
-CMD ["deno", "test", "-A", "test/linux.test.ts"]
+# Run tests
+CMD ["deno", "test", "-A", "test/rig.test.ts"]
