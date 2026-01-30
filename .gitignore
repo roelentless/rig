@@ -3,3 +3,5 @@ assets/rig-orig.png
 rig.yaml
 rig.yml
 !example/rig.yaml
+.rig/
+test/tmp/

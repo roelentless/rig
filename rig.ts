@@ -106,6 +106,7 @@ const SERVICE_COLORS = [
 ];
 
 const CONFIG_NAMES = ["rig.yaml", "rig.yml"];
+const LOG_DIR = ".rig/logs";
 
 // Disable colors when not a TTY (piping to other commands)
 const IS_TTY = Deno.stdout.isTerminal();
@@ -216,21 +217,37 @@ function getServiceColor(services: Record<string, ServiceDef>, serviceName: stri
   return SERVICE_COLORS[index % SERVICE_COLORS.length];
 }
 
-// Process and print log lines, returning the new line count for tracking
-function processLogLines(
-  logs: string,
-  serviceName: string,
-  color: string,
-  lastLineCount = 0
-): number {
-  const lines = logs.split("\n");
-  const newLines = lastLineCount > 0 ? lines.slice(lastLineCount) : lines;
-  for (const line of newLines) {
-    if (line.trim()) {
-      log(line, serviceName, color);
+/**
+ * Strip ANSI control codes that would mess up log prefixes.
+ * Preserves color codes but removes cursor movement, line clearing, etc.
+ */
+function stripControlCodes(line: string): string {
+  return line
+    .replace(/\r/g, "")                     // Carriage return
+    .replace(/\x1b\[\d*[ABCD]/g, "")        // Cursor movement (up/down/forward/back)
+    .replace(/\x1b\[\d*;\d*[Hf]/g, "")      // Cursor position
+    .replace(/\x1b\[\d*G/g, "")             // Cursor to column
+    .replace(/\x1b\[\d*[JK]/g, "")          // Clear screen/line
+    .replace(/\x1b\[\?25[lh]/g, "");        // Hide/show cursor
+}
+
+async function ensureGitignore(configDir: string): Promise<void> {
+  const gitignorePath = `${configDir}/.gitignore`;
+
+  try {
+    const content = await Deno.readTextFile(gitignorePath);
+    // Check if .rig is already in gitignore (with or without trailing slash)
+    const lines = content.split("\n");
+    if (lines.some((line) => line.trim() === ".rig" || line.trim() === ".rig/")) {
+      return; // Already present
     }
+    // Append .rig/ to existing gitignore
+    const newContent = content.endsWith("\n") ? content + ".rig/\n" : content + "\n.rig/\n";
+    await Deno.writeTextFile(gitignorePath, newContent);
+  } catch {
+    // No .gitignore exists, create one
+    await Deno.writeTextFile(gitignorePath, ".rig/\n");
   }
-  return lines.length;
 }
 
 // ============================================================================
@@ -492,7 +509,38 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
 // ============================================================================
 
 class SessionManager {
-  constructor(private group: string) {}
+  constructor(private group: string, private configDir: string) {}
+
+  // Log file paths - grouped by config group name
+  logDir(service: string): string {
+    return `${this.configDir}/${LOG_DIR}/${this.group}/${service}`;
+  }
+
+  logFile(service: string, previous = false): string {
+    return `${this.logDir(service)}/${previous ? "previous" : "current"}.log`;
+  }
+
+  async rotateLog(service: string): Promise<void> {
+    const dir = this.logDir(service);
+    const current = this.logFile(service);
+    const previous = this.logFile(service, true);
+
+    // Create log directory if needed
+    await Deno.mkdir(dir, { recursive: true });
+
+    // Ensure .rig is in .gitignore
+    await ensureGitignore(this.configDir);
+
+    // Rotate: current -> previous
+    try {
+      await Deno.rename(current, previous);
+    } catch {
+      // current doesn't exist, that's fine
+    }
+
+    // Create empty current log file
+    await Deno.writeTextFile(current, "");
+  }
 
   sessionName(service: string): string {
     return `${this.group}-${service}`;
@@ -539,6 +587,19 @@ class SessionManager {
     await new Deno.Command("tmux", {
       args: ["set-option", "-t", session, "remain-on-exit", "on"],
     }).output();
+
+    // Set up log file with pipe-pane
+    await this.rotateLog(service);
+    const logFile = this.logFile(service);
+    await new Deno.Command("tmux", {
+      args: ["pipe-pane", "-t", session, "-o", `cat >> "${logFile}"`],
+    }).output();
+
+    // Capture any output that happened before pipe-pane was set up
+    const existingOutput = await this.logs(service);
+    if (existingOutput.trim()) {
+      await Deno.writeTextFile(logFile, existingOutput, { append: true });
+    }
 
     // Get PID
     const status = await this.status(service);
@@ -683,6 +744,81 @@ class SessionManager {
 }
 
 // ============================================================================
+// LOG STREAMING
+// ============================================================================
+
+/**
+ * Stream logs from multiple services using tail -F on their log files.
+ * Returns cleanup function to stop all tail processes.
+ */
+function streamLogs(
+  mgr: SessionManager,
+  services: string[],
+  config: Config,
+  options: { previous?: boolean } = {}
+): { cleanup: () => void } {
+  const tails: Deno.ChildProcess[] = [];
+  const aborted = { value: false };
+
+  for (const svc of services) {
+    const logFile = mgr.logFile(svc, options.previous);
+    const color = getServiceColor(config.services, svc);
+
+    // tail -F follows by name (handles rotation/creation)
+    // -s 0.1 = check every 100ms for changes (default 1s is too slow)
+    // -n +1 = start from beginning of file
+    const proc = new Deno.Command("tail", {
+      args: ["-F", "-s", "0.1", "-n", "+1", logFile],
+      stdout: "piped",
+      stderr: "piped", // suppress "file replaced" messages
+    }).spawn();
+
+    tails.push(proc);
+
+    // Read lines and log them
+    (async () => {
+      const reader = proc.stdout.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (!aborted.value) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            // Strip control codes that would overwrite the prefix
+            const cleanLine = stripControlCodes(line);
+            if (cleanLine.trim()) {
+              log(cleanLine, svc, color);
+            }
+          }
+        }
+      } catch {
+        // Reader closed, ignore
+      }
+    })();
+  }
+
+  return {
+    cleanup: () => {
+      aborted.value = true;
+      for (const proc of tails) {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          // Already dead
+        }
+      }
+    },
+  };
+}
+
+// ============================================================================
 // DEPENDENCY ORDERING
 // ============================================================================
 
@@ -824,12 +960,11 @@ async function monitor(
 ): Promise<void> {
   logSystem("Monitoring processes... (Ctrl+C to stop all)");
 
-  const lastLines: Record<string, number> = {};
-  const deadServices = new Set<string>();
-  for (const svc of serviceNames) lastLines[svc] = 0;
-
   let running = true;
   let stopping = false;
+
+  // Start streaming logs
+  const { cleanup } = streamLogs(mgr, serviceNames, config);
 
   // Handle Ctrl+C - ensure only one signal handler executes cleanup
   const handleShutdown = async (signal: string) => {
@@ -837,6 +972,7 @@ async function monitor(
     stopping = true;
     if (!running) return;
     running = false;
+    cleanup();
     logSystem(`Received ${signal}, stopping all processes...`);
     await cmdStop(mgr, config, serviceNames);
     Deno.exit(0);
@@ -845,25 +981,21 @@ async function monitor(
   Deno.addSignalListener("SIGINT", () => handleShutdown("SIGINT"));
   Deno.addSignalListener("SIGTERM", () => handleShutdown("SIGTERM"));
 
-  // Poll loop
+  // Monitor for dead services
+  const deadServices = new Set<string>();
   while (running) {
     for (const svc of serviceNames) {
       if (!running) break;
       if (deadServices.has(svc)) continue;
 
-      const logs = await mgr.logs(svc);
-      const color = getServiceColor(config.services, svc);
-      lastLines[svc] = processLogLines(logs, svc, color, lastLines[svc]);
-
-      // Check if dead - just report, don't kill others
       const status = await mgr.status(svc);
-      if (!status.running && status.exitCode !== undefined && !deadServices.has(svc)) {
+      if (!status.running && status.exitCode !== undefined) {
         log(`Exited with code ${status.exitCode}`, svc, "red");
         deadServices.add(svc);
       }
     }
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 500));
   }
 }
 
@@ -1189,7 +1321,8 @@ async function cmdLogs(
   mgr: SessionManager,
   config: Config,
   serviceName: string | undefined,
-  follow: boolean
+  follow: boolean,
+  previous: boolean
 ): Promise<void> {
   const serviceNames = serviceName ? [serviceName] : Object.keys(config.services);
 
@@ -1199,58 +1332,66 @@ async function cmdLogs(
     Deno.exit(1);
   }
 
-  // Check at least one service is running
-  let anyRunning = false;
+  // Check if log files exist
+  let anyLogs = false;
   for (const svc of serviceNames) {
-    if (await mgr.exists(svc)) {
-      anyRunning = true;
-      break;
+    const logFile = mgr.logFile(svc, previous);
+    try {
+      const stat = await Deno.stat(logFile);
+      if (stat.size > 0) {
+        anyLogs = true;
+        break;
+      }
+    } catch {
+      // File doesn't exist
     }
   }
 
-  if (!anyRunning) {
-    logError(serviceName ? `'${serviceName}' is not running` : "No processes running");
+  if (!anyLogs && previous) {
+    logError("No previous logs found");
+    Deno.exit(1);
+  }
+
+  if (!anyLogs && !follow) {
+    logError(serviceName ? `No logs for '${serviceName}'` : "No logs found");
+    Deno.exit(1);
+  }
+
+  if (follow && previous) {
+    logError("Cannot follow previous logs");
     Deno.exit(1);
   }
 
   if (follow) {
-    // Follow mode - tail logs, Ctrl+C just exits (doesn't stop services)
-    const lastLines: Record<string, number> = {};
-    for (const svc of serviceNames) lastLines[svc] = 0;
-
+    // Follow mode - stream logs, Ctrl+C just exits (doesn't stop services)
     let running = true;
+    const { cleanup } = streamLogs(mgr, serviceNames, config);
 
     Deno.addSignalListener("SIGINT", () => {
       running = false;
+      cleanup();
     });
 
-    // Initial dump of existing logs
-    for (const svc of serviceNames) {
-      if (!(await mgr.exists(svc))) continue;
-      const logs = await mgr.logs(svc);
-      const color = getServiceColor(config.services, svc);
-      lastLines[svc] = processLogLines(logs, svc, color);
-    }
-
-    // Follow new output
+    // Wait until interrupted
     while (running) {
-      for (const svc of serviceNames) {
-        if (!running) break;
-        if (!(await mgr.exists(svc))) continue;
-
-        const logs = await mgr.logs(svc);
-        const color = getServiceColor(config.services, svc);
-        lastLines[svc] = processLogLines(logs, svc, color, lastLines[svc]);
-      }
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 500));
     }
   } else {
     // Dump mode - show all logs and exit
     for (const svc of serviceNames) {
-      if (!(await mgr.exists(svc))) continue;
-      const logs = await mgr.logs(svc);
+      const logFile = mgr.logFile(svc, previous);
       const color = getServiceColor(config.services, svc);
-      processLogLines(logs, svc, color);
+      try {
+        const content = await Deno.readTextFile(logFile);
+        for (const line of content.split("\n")) {
+          const cleanLine = stripControlCodes(line);
+          if (cleanLine.trim()) {
+            log(cleanLine, svc, color);
+          }
+        }
+      } catch {
+        // No logs for this service
+      }
     }
   }
 }
@@ -1370,7 +1511,7 @@ COMMANDS:
   restart [names...]        Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
-  logs/tail [-f] [name]     Show logs (all or specific process)
+  logs/tail [-f] [--prev] [name]  Show logs (--prev for last run)
   config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
   version                   Show version
 
@@ -1390,6 +1531,7 @@ EXAMPLES:
   rig logs -f               Follow all logs (Ctrl+C to exit)
   rig logs api              Dump api logs
   rig logs -f api           Follow api logs
+  rig logs --prev           Show previous run's logs
   rig config                Show all tmux commands
   rig config --raw          Show raw YAML config
   rig config --json         Show raw JSON config
@@ -1411,7 +1553,7 @@ async function main(): Promise<void> {
 
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
-    boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json", "verbose", "v"],
+    boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json", "verbose", "v", "prev"],
     alias: { f: "full", h: "help", V: "version", v: "verbose" },
   });
 
@@ -1434,8 +1576,8 @@ async function main(): Promise<void> {
   // Commands that need config
   if (["start", "up", "stop", "down", "kill", "restart", "ps", "list", "top", "config"].includes(command)) {
     try {
-      const { config } = await loadConfig();
-      const mgr = new SessionManager(config.group);
+      const { config, configDir } = await loadConfig();
+      const mgr = new SessionManager(config.group, configDir);
 
       switch (command) {
         case "start":
@@ -1474,9 +1616,9 @@ async function main(): Promise<void> {
     await cmdInit();
   } else if (command === "logs" || command === "tail") {
     try {
-      const { config } = await loadConfig();
-      const mgr = new SessionManager(config.group);
-      await cmdLogs(mgr, config, services[0], args.f);
+      const { config, configDir } = await loadConfig();
+      const mgr = new SessionManager(config.group, configDir);
+      await cmdLogs(mgr, config, services[0], args.f, args.prev);
     } catch (err) {
       if (err instanceof Error && err.message.includes("Config file not found")) {
         console.error("No config file found. Run 'rig init' to create one.");

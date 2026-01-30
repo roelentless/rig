@@ -34,12 +34,25 @@ export function getRepoRoot(): string {
   return testDir.replace(/\/test$/, "");
 }
 
-// Helper to run rig commands
+// Get the test tmp directory for test artifacts
+export function getTestTmpDir(): string {
+  return `${import.meta.dirname!}/tmp`;
+}
+
+// Ensure test tmp directory exists
+export async function ensureTestTmpDir(): Promise<void> {
+  const tmpDir = getTestTmpDir();
+  await Deno.mkdir(tmpDir, { recursive: true });
+}
+
+// Helper to run rig commands (runs from test/tmp directory)
 export async function rig(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const repoRoot = getRepoRoot();
+  const testTmpDir = getTestTmpDir();
+  await ensureTestTmpDir();
   const cmd = new Deno.Command("deno", {
     args: ["run", "-A", `${repoRoot}/rig.ts`, ...args],
-    cwd: repoRoot,
+    cwd: testTmpDir,
   });
   const result = await cmd.output();
   return {
@@ -74,17 +87,18 @@ export async function cleanupSessions(): Promise<void> {
   }
 }
 
-// Setup: write test config
+// Setup: write test config to test/tmp
 export async function setupTestConfig(): Promise<void> {
-  const repoRoot = getRepoRoot();
-  await Deno.writeTextFile(`${repoRoot}/rig.yaml`, TEST_CONFIG);
+  const testTmpDir = getTestTmpDir();
+  await ensureTestTmpDir();
+  await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, TEST_CONFIG);
 }
 
 // Teardown: remove test config and cleanup sessions
 export async function teardown(): Promise<void> {
-  const repoRoot = getRepoRoot();
+  const testTmpDir = getTestTmpDir();
   try {
-    await Deno.remove(`${repoRoot}/rig.yaml`);
+    await Deno.remove(`${testTmpDir}/rig.yaml`);
   } catch { /* ignore */ }
   await cleanupSessions();
 }

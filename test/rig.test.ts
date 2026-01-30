@@ -10,6 +10,8 @@ import {
   assertEquals,
   assertStringIncludes,
   delay,
+  ensureTestTmpDir,
+  getTestTmpDir,
   rig,
   sessionExists,
   setupTestConfig,
@@ -246,7 +248,8 @@ Deno.test({
 Deno.test({
   name: `[${PLATFORM}] rig start - respects depends_on ordering`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
     const depsConfig = `
 group: ${TEST_GROUP}
 
@@ -267,7 +270,7 @@ services:
     working_dir: /tmp
     depends_on: [db]
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, depsConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, depsConfig);
     try {
       const { code, stdout } = await rig(["start", "-d"]);
       assertEquals(code, 0);
@@ -298,7 +301,8 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - healthcheck grace_ms delays dependent services`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
     const graceConfig = `
 group: ${TEST_GROUP}
 
@@ -314,7 +318,7 @@ services:
     working_dir: /tmp
     depends_on: [slow-db]
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, graceConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, graceConfig);
     try {
       const startTime = Date.now();
       const { code } = await rig(["start", "-d"]);
@@ -336,7 +340,8 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - invalid depends_on reference errors`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
     const invalidConfig = `
 group: ${TEST_GROUP}
 
@@ -346,7 +351,7 @@ services:
     working_dir: /tmp
     depends_on: [nonexistent]
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, invalidConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, invalidConfig);
     try {
       const { code, stderr } = await rig(["start", "-d"]);
       assertEquals(code, 1);
@@ -360,10 +365,11 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - loads env_file variables`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
 
     // Create .env file
-    await Deno.writeTextFile(`${repoRoot}/test.env`, "MY_VAR=from_env_file\n");
+    await Deno.writeTextFile(`${testTmpDir}/test.env`, "MY_VAR=from_env_file\n");
 
     const envConfig = `
 group: ${TEST_GROUP}
@@ -374,7 +380,7 @@ services:
     working_dir: /tmp
     env_file: ./test.env
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, envConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, envConfig);
 
     try {
       await rig(["start", "-d", "env-test"]);
@@ -384,7 +390,7 @@ services:
       assertStringIncludes(stdout, "MY_VAR=from_env_file");
     } finally {
       await teardown();
-      await Deno.remove(`${repoRoot}/test.env`).catch(() => {});
+      await Deno.remove(`${testTmpDir}/test.env`).catch(() => {});
     }
   },
 });
@@ -392,7 +398,8 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - env_file with required:false skips missing file`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
 
     const optionalEnvConfig = `
 group: ${TEST_GROUP}
@@ -405,7 +412,7 @@ services:
       - path: ./nonexistent.env
         required: false
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, optionalEnvConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, optionalEnvConfig);
 
     try {
       // Should succeed even though env file is missing
@@ -421,10 +428,11 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - inline environment overrides env_file`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
 
     // Create .env file with a variable
-    await Deno.writeTextFile(`${repoRoot}/override.env`, "MY_VAR=from_file\n");
+    await Deno.writeTextFile(`${testTmpDir}/override.env`, "MY_VAR=from_file\n");
 
     const overrideConfig = `
 group: ${TEST_GROUP}
@@ -437,7 +445,7 @@ services:
     environment:
       MY_VAR: from_inline
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, overrideConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, overrideConfig);
 
     try {
       await rig(["start", "-d", "override-test"]);
@@ -448,7 +456,7 @@ services:
       assertStringIncludes(stdout, "MY_VAR=from_inline");
     } finally {
       await teardown();
-      await Deno.remove(`${repoRoot}/override.env`).catch(() => {});
+      await Deno.remove(`${testTmpDir}/override.env`).catch(() => {});
     }
   },
 });
@@ -456,7 +464,8 @@ services:
 Deno.test({
   name: `[${PLATFORM}] rig start - env_file with required:true errors on missing file`,
   async fn() {
-    const repoRoot = import.meta.dirname!.replace(/\/test$/, "");
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
 
     const requiredEnvConfig = `
 group: ${TEST_GROUP}
@@ -467,7 +476,7 @@ services:
     working_dir: /tmp
     env_file: ./definitely-missing.env
 `;
-    await Deno.writeTextFile(`${repoRoot}/rig.yaml`, requiredEnvConfig);
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, requiredEnvConfig);
 
     try {
       const { code, stderr } = await rig(["start", "-d"]);

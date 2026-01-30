@@ -90,7 +90,7 @@ COMMANDS:
   restart [names...]        Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
-  logs/tail [-f] [name]     Show logs (all or specific process)
+  logs/tail [-f] [--prev] [name]  Show logs (--prev for last run)
   config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
   version                   Show version
 
@@ -110,6 +110,7 @@ EXAMPLES:
   rig logs -f               Follow all logs (Ctrl+C to exit)
   rig logs api              Dump api logs
   rig logs -f api           Follow api logs
+  rig logs --prev           Show previous run's logs
   rig config                Show all tmux commands
   rig config --raw          Show raw YAML config
   rig config --json         Show raw JSON config
@@ -160,6 +161,26 @@ Files are processed in order. Later files override earlier. Inline `environment`
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet
 
+## Log files
+
+Rig stores logs in `.rig/logs/{group}/{service}/`:
+
+```
+.rig/
+  logs/
+    myapp/
+      api/
+        current.log    # Current run
+        previous.log   # Previous run (rotated on restart)
+      web/
+        current.log
+        previous.log
+```
+
+Logs persist after processes stop - useful for debugging crashes. The `--prev` flag shows logs from the last run before the current one.
+
+Rig automatically adds `.rig/` to your `.gitignore`.
+
 ## Uninstall
 
 ```bash
@@ -171,6 +192,7 @@ deno uninstall -g rig
 tmux is the source of truth - no state files.
 
 - Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
+- Logs: `tmux pipe-pane` streams output to `.rig/logs/` files
 - Stop: `tmux kill-session -t {group}-{name}` (sends SIGHUP)
 - Kill: `SIGKILL` to process tree, then cleanup tmux session
 - Status: `tmux list-sessions` filtered by group prefix

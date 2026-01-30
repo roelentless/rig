@@ -105,6 +105,7 @@ test/
   _helpers.ts     # Shared utilities (rig runner, tmux helpers, config)
   rig.test.ts     # Unified tests (run on both macOS and Linux)
   Dockerfile      # Linux test environment for Docker
+  tmp/            # Test artifacts (gitignored) - rig.yaml, .env files, etc.
 ```
 
 Tests automatically detect the platform via `Deno.build.os` and prefix test names accordingly.
