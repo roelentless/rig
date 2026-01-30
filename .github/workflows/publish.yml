@@ -21,14 +21,14 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Update version in deno.json
+      - name: Extract version and update files
         run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
+          VERSION=${GITHUB_REF#refs/tags/}
           sed -i 's/"version": "0.0.0"/"version": "'$VERSION'"/' deno.json
+          cat > version.ts << EOF
+          // Version injected during build by GitHub workflow
+          export let VERSION = "$VERSION";
+          EOF
 
       - name: Publish to JSR
         run: deno publish --allow-dirty

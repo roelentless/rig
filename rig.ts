@@ -6,12 +6,13 @@
  * No state files - tmux is the source of truth.
  */
 
-import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { parseArgs } from "@std/cli/parse-args";
+// JSR imports required for global install - deno install resolves JSR packages correctly
+// deno-lint-ignore no-import-prefix
+import { parse as parseYaml, stringify as stringifyYaml } from "jsr:@std/yaml@^1.0.11";
+// deno-lint-ignore no-import-prefix
+import { parseArgs } from "jsr:@std/cli@^1.0.25/parse-args";
 
-// Load version from deno.json
-const denoConfigPath = new URL("./deno.json", import.meta.url);
-const denoConfig = JSON.parse(await Deno.readTextFile(denoConfigPath));
+import { VERSION } from "./version.ts";
 
 // ============================================================================
 // TYPES
@@ -1149,7 +1150,7 @@ async function main(): Promise<void> {
   const services = servicesRaw.flatMap((s) => s.split(",").map((n) => n.trim()).filter((n) => n.length > 0));
 
   if (args.version || command === "version") {
-    print(denoConfig.version);
+    print(VERSION);
     Deno.exit(0);
   }
 

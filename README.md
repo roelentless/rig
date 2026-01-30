@@ -67,20 +67,44 @@ services:
 
 ## Commands
 
-```bash
-rig init               # Create rig.yaml template
-rig up                 # Start all (foreground, logs streaming)
-rig up -d              # Start detached (background)
-rig up api worker      # Start specific services
-rig down               # Stop all
-rig stop api           # Stop specific service
-rig restart api        # Restart service
-rig ps                 # Quick status
-rig ps -f              # Status with memory/cpu/ports
-rig top                # Live dashboard (q to exit)
-rig logs               # Dump all logs
-rig logs -f            # Follow all logs
-rig logs api           # Logs for specific service
+```
+rig - lightweight, tmux-based process manager
+
+USAGE:
+  rig <command> [options] [names...]
+
+COMMANDS:
+  init                      Create rig.yaml in current directory
+  start/up [names...]       Start processes (foreground, streaming logs)
+  start/up -d [names...]    Start processes in background (detached)
+  stop/down [names...]      Stop processes
+  restart [names...]        Restart processes
+  ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
+  top                       Live dashboard with auto-refreshing metrics
+  logs/tail [-f] [name]     Show logs (all or specific process)
+  config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
+  version                   Show version
+
+EXAMPLES:
+  rig up                    Start all processes
+  rig up -d                 Start all in background
+  rig start api worker      Start specific processes
+  rig down                  Stop all processes
+  rig restart api           Restart single process
+  rig ps                    Show status
+  rig logs                  Dump all logs
+  rig logs -f               Follow all logs (Ctrl+C to exit)
+  rig logs api              Dump api logs
+  rig logs -f api           Follow api logs
+  rig config                Show all tmux commands
+  rig config --raw          Show raw YAML config
+  rig config --json         Show raw JSON config
+  rig config api            Show command for specific process
+  rig config --raw api      Show raw YAML for specific service
+  rig config --json api     Show raw JSON for specific service
+
+CONFIG:
+  Looks for rig.yaml or rig.yml in current directory.
 ```
 
 ## How it works

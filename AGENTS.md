@@ -60,6 +60,19 @@ CLI                    → main(), printUsage()
 
 4. **lsof on macOS**: `-p` flag doesn't filter with `-i`. Parse output and filter by PID.
 
+## Local Development
+
+Developers should set up local development as described in [CONTRIBUTING.md](CONTRIBUTING.md). Once set up, you can test changes locally without reinstalling.
+
+The installed `rig` command is a wrapper script that runs:
+```sh
+exec deno run --allow-all --no-config 'file:///path/to/rig/rig.ts' "$@"
+```
+
+## Documentation
+
+**Keep README.md in sync with command output**: When modifying commands or their output, always run `rig -h` and update the Commands section in README.md to match the exact output. The README should reflect what users see when they run the help command.
+
 ## Testing
 
 Tests are organized by platform in the `test/` folder.
