@@ -36,13 +36,15 @@ sudo apt install tmux
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
-**Install rig:**
+**Install or upgrade rig:**
 
 ```bash
 deno install -Agf -n rig jsr:@roelentless/rig
 ```
 
 Ensure `~/.deno/bin` is in your PATH.
+
+**To upgrade**, run the same command (the `-f` flag forces reinstall with the latest version).
 
 ## Configuration
 
@@ -120,4 +122,4 @@ AGPL-3.0 - See LICENSE file.
 
 Note: built to improve my personal workflow during development of [halebase.com](https://halebase.com) — don’t take it too seriously.
 
-Generated with LLM assistance.
+Generated with some LLM assistance.
