@@ -39,9 +39,19 @@ interface ServiceDef {
   healthcheck?: HealthCheck;
 }
 
-interface Config {
-  group: string;
+interface GroupDef {
   services: Record<string, ServiceDef>;
+}
+
+interface Config {
+  groups: Record<string, GroupDef>;
+}
+
+// Flattened service for easy lookup
+interface ResolvedService {
+  group: string;
+  name: string;
+  def: ServiceDef;
 }
 
 interface SessionStatus {
@@ -208,13 +218,15 @@ async function loadEnvFiles(
   return result;
 }
 
-function getServiceColor(services: Record<string, ServiceDef>, serviceName: string): string {
+function getServiceColor(allServices: ResolvedService[], serviceName: string): string {
   // Allow config override, otherwise use deterministic color by index
-  const def = services[serviceName];
+  const idx = allServices.findIndex((s) => s.name === serviceName);
+  if (idx === -1) return SERVICE_COLORS[0];
+
+  const def = allServices[idx].def;
   if (def?.color) return def.color;
 
-  const index = Object.keys(services).indexOf(serviceName);
-  return SERVICE_COLORS[index % SERVICE_COLORS.length];
+  return SERVICE_COLORS[idx % SERVICE_COLORS.length];
 }
 
 /**
@@ -410,98 +422,199 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
     throw new Error(`Invalid YAML in ${path}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  if (!raw.group || typeof raw.group !== "string") {
-    throw new Error("Config must have a 'group' field (string)");
-  }
-
-  if (!raw.services || typeof raw.services !== "object") {
-    throw new Error("Config must have a 'services' field (object)");
+  if (!raw.groups || typeof raw.groups !== "object") {
+    throw new Error("Config must have a 'groups' field (object)");
   }
 
   const configDir = Deno.cwd();
-  const services: Record<string, ServiceDef> = {};
+  const groups: Record<string, GroupDef> = {};
+  const seenServices = new Map<string, string>(); // serviceName -> groupName (for duplicate detection)
 
-  for (const [name, def] of Object.entries(raw.services as Record<string, unknown>)) {
-    const d = def as Record<string, unknown>;
-    if (!d.command || typeof d.command !== "string") {
-      throw new Error(`Service '${name}' must have a 'command' field`);
-    }
-    if (!d.working_dir || typeof d.working_dir !== "string") {
-      throw new Error(`Service '${name}' must have a 'working_dir' field`);
+  for (const [groupName, groupDef] of Object.entries(raw.groups as Record<string, unknown>)) {
+    // Validate group name (alphanumeric, hyphen, underscore)
+    if (!/^[a-zA-Z0-9_-]+$/.test(groupName)) {
+      throw new Error(`Invalid group name '${groupName}': must be alphanumeric with hyphens/underscores only`);
     }
 
-    // Resolve relative working_dir paths
-    let working_dir = d.working_dir as string;
-    if (!working_dir.startsWith("/")) {
-      working_dir = `${configDir}/${working_dir}`;
+    const g = groupDef as Record<string, unknown>;
+    if (!g.services || typeof g.services !== "object") {
+      throw new Error(`Group '${groupName}' must have a 'services' field (object)`);
     }
 
-    // Convert all environment values to strings for noob-friendliness
-    const environment = d.environment
-      ? Object.fromEntries(
-          Object.entries(d.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
-        )
-      : undefined;
+    const services: Record<string, ServiceDef> = {};
 
-    // Parse depends_on
-    let depends_on: string[] | undefined;
-    if (d.depends_on) {
-      if (!Array.isArray(d.depends_on)) {
-        throw new Error(`Service '${name}' depends_on must be an array`);
+    for (const [name, def] of Object.entries(g.services as Record<string, unknown>)) {
+      // Check for duplicate service names across groups
+      if (seenServices.has(name)) {
+        throw new Error(`Duplicate service name '${name}' found in groups '${seenServices.get(name)}' and '${groupName}'`);
       }
-      depends_on = d.depends_on as string[];
+      seenServices.set(name, groupName);
+
+      const d = def as Record<string, unknown>;
+      if (!d.command || typeof d.command !== "string") {
+        throw new Error(`Service '${groupName}.${name}' must have a 'command' field`);
+      }
+      if (!d.working_dir || typeof d.working_dir !== "string") {
+        throw new Error(`Service '${groupName}.${name}' must have a 'working_dir' field`);
+      }
+
+      // Resolve relative working_dir paths
+      let working_dir = d.working_dir as string;
+      if (!working_dir.startsWith("/")) {
+        working_dir = `${configDir}/${working_dir}`;
+      }
+
+      // Convert all environment values to strings for noob-friendliness
+      const environment = d.environment
+        ? Object.fromEntries(
+            Object.entries(d.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+          )
+        : undefined;
+
+      // Parse depends_on
+      let depends_on: string[] | undefined;
+      if (d.depends_on) {
+        if (!Array.isArray(d.depends_on)) {
+          throw new Error(`Service '${groupName}.${name}' depends_on must be an array`);
+        }
+        depends_on = d.depends_on as string[];
+      }
+
+      // Parse healthcheck
+      let healthcheck: HealthCheck | undefined;
+      if (d.healthcheck) {
+        const hc = d.healthcheck as Record<string, unknown>;
+        healthcheck = {};
+        if (hc.grace_ms !== undefined) {
+          healthcheck.grace_ms = Number(hc.grace_ms);
+        }
+      }
+
+      // Parse env_file and merge with inline environment
+      let envFileEntries: EnvFileEntry[] = [];
+      if (d.env_file) {
+        if (typeof d.env_file === "string") {
+          envFileEntries = [{ path: d.env_file, required: true }];
+        } else if (Array.isArray(d.env_file)) {
+          envFileEntries = (d.env_file as unknown[]).map((entry) => {
+            if (typeof entry === "string") {
+              return { path: entry, required: true };
+            }
+            const e = entry as Record<string, unknown>;
+            return {
+              path: e.path as string,
+              required: e.required !== false,  // default true
+            };
+          });
+        }
+      }
+
+      // Load env files and merge (inline environment overrides env_file)
+      let mergedEnvironment = environment;
+      if (envFileEntries.length > 0) {
+        const envFromFiles = await loadEnvFiles(envFileEntries, configDir);
+        mergedEnvironment = { ...envFromFiles, ...environment };
+      }
+
+      services[name] = {
+        command: d.command as string,
+        working_dir,
+        environment: mergedEnvironment,
+        color: d.color as string | undefined,
+        depends_on,
+        healthcheck,
+      };
     }
 
-    // Parse healthcheck
-    let healthcheck: HealthCheck | undefined;
-    if (d.healthcheck) {
-      const hc = d.healthcheck as Record<string, unknown>;
-      healthcheck = {};
-      if (hc.grace_ms !== undefined) {
-        healthcheck.grace_ms = Number(hc.grace_ms);
+    groups[groupName] = { services };
+  }
+
+  // Validate depends_on references exist
+  for (const [groupName, groupDef] of Object.entries(groups)) {
+    for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
+      for (const dep of serviceDef.depends_on ?? []) {
+        if (!seenServices.has(dep)) {
+          throw new Error(`Service '${groupName}.${serviceName}' depends on unknown service '${dep}'`);
+        }
       }
     }
-
-    // Parse env_file and merge with inline environment
-    let envFileEntries: EnvFileEntry[] = [];
-    if (d.env_file) {
-      if (typeof d.env_file === "string") {
-        envFileEntries = [{ path: d.env_file, required: true }];
-      } else if (Array.isArray(d.env_file)) {
-        envFileEntries = (d.env_file as unknown[]).map((entry) => {
-          if (typeof entry === "string") {
-            return { path: entry, required: true };
-          }
-          const e = entry as Record<string, unknown>;
-          return {
-            path: e.path as string,
-            required: e.required !== false,  // default true
-          };
-        });
-      }
-    }
-
-    // Load env files and merge (inline environment overrides env_file)
-    let mergedEnvironment = environment;
-    if (envFileEntries.length > 0) {
-      const envFromFiles = await loadEnvFiles(envFileEntries, configDir);
-      mergedEnvironment = { ...envFromFiles, ...environment };
-    }
-
-    services[name] = {
-      command: d.command as string,
-      working_dir,
-      environment: mergedEnvironment,
-      color: d.color as string | undefined,
-      depends_on,
-      healthcheck,
-    };
   }
 
   return {
-    config: { group: raw.group as string, services },
+    config: { groups },
     configDir,
   };
+}
+
+/**
+ * Build a flat lookup map from service name to its group and definition.
+ * Since service names are unique across groups, this enables O(1) lookup.
+ */
+function buildServiceLookup(config: Config): Map<string, ResolvedService> {
+  const lookup = new Map<string, ResolvedService>();
+  for (const [groupName, groupDef] of Object.entries(config.groups)) {
+    for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
+      lookup.set(serviceName, { group: groupName, name: serviceName, def: serviceDef });
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Get all services from config as a flat array.
+ */
+function getAllServices(config: Config): ResolvedService[] {
+  const services: ResolvedService[] = [];
+  for (const [groupName, groupDef] of Object.entries(config.groups)) {
+    for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
+      services.push({ group: groupName, name: serviceName, def: serviceDef });
+    }
+  }
+  return services;
+}
+
+/**
+ * Resolve CLI targets to a list of services.
+ * - If groupNames provided: return all services in those groups
+ * - If serviceNames provided: resolve each service name
+ * - If neither: return all services
+ */
+function resolveTargets(
+  config: Config,
+  lookup: Map<string, ResolvedService>,
+  serviceNames: string[],
+  groupNames: string[]
+): ResolvedService[] {
+  // If -g flags provided, get all services from those groups
+  if (groupNames.length > 0) {
+    const services: ResolvedService[] = [];
+    for (const groupName of groupNames) {
+      const groupDef = config.groups[groupName];
+      if (!groupDef) {
+        throw new Error(`Unknown group: ${groupName}`);
+      }
+      for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
+        services.push({ group: groupName, name: serviceName, def: serviceDef });
+      }
+    }
+    return services;
+  }
+
+  // If service names provided, resolve them
+  if (serviceNames.length > 0) {
+    const services: ResolvedService[] = [];
+    for (const name of serviceNames) {
+      const resolved = lookup.get(name);
+      if (!resolved) {
+        throw new Error(`Unknown service: ${name}`);
+      }
+      services.push(resolved);
+    }
+    return services;
+  }
+
+  // No args - return all services
+  return getAllServices(config);
 }
 
 // ============================================================================
@@ -752,17 +865,18 @@ class SessionManager {
  * Returns cleanup function to stop all tail processes.
  */
 function streamLogs(
-  mgr: SessionManager,
-  services: string[],
-  config: Config,
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[],
+  allServices: ResolvedService[],
   options: { previous?: boolean } = {}
 ): { cleanup: () => void } {
   const tails: Deno.ChildProcess[] = [];
   const aborted = { value: false };
 
-  for (const svc of services) {
-    const logFile = mgr.logFile(svc, options.previous);
-    const color = getServiceColor(config.services, svc);
+  for (const target of targets) {
+    const mgr = managers.get(target.group)!;
+    const logFile = mgr.logFile(target.name, options.previous);
+    const color = getServiceColor(allServices, target.name);
 
     // tail -F follows by name (handles rotation/creation)
     // -s 0.1 = check every 100ms for changes (default 1s is too slow)
@@ -794,7 +908,7 @@ function streamLogs(
             // Strip control codes that would overwrite the prefix
             const cleanLine = stripControlCodes(line);
             if (cleanLine.trim()) {
-              log(cleanLine, svc, color);
+              log(cleanLine, target.name, color);
             }
           }
         }
@@ -828,48 +942,48 @@ function streamLogs(
  * but must wait for previous levels to complete.
  */
 function computeStartupOrder(
-  services: Record<string, ServiceDef>,
-  requestedNames: string[]
-): string[][] {
-  const requested = new Set(requestedNames);
+  targets: ResolvedService[]
+): ResolvedService[][] {
+  const requested = new Set(targets.map((t) => t.name));
+  const byName = new Map(targets.map((t) => [t.name, t]));
 
   // Build dependency graph (only for requested services)
   const deps: Record<string, Set<string>> = {};
-  for (const name of requestedNames) {
-    deps[name] = new Set();
-    const svcDeps = services[name]?.depends_on ?? [];
+  for (const target of targets) {
+    deps[target.name] = new Set();
+    const svcDeps = target.def.depends_on ?? [];
     for (const dep of svcDeps) {
       // Only include dependencies that are in the requested set
       if (requested.has(dep)) {
-        deps[name].add(dep);
+        deps[target.name].add(dep);
       }
     }
   }
 
   // Kahn's algorithm for topological sort with levels
-  const levels: string[][] = [];
-  const remaining = new Set(requestedNames);
+  const levels: ResolvedService[][] = [];
+  const remaining = new Set(targets.map((t) => t.name));
 
   while (remaining.size > 0) {
     // Find all services with no remaining dependencies
-    const level: string[] = [];
+    const level: ResolvedService[] = [];
     for (const name of remaining) {
       const unresolvedDeps = [...deps[name]].filter((d) => remaining.has(d));
       if (unresolvedDeps.length === 0) {
-        level.push(name);
+        level.push(byName.get(name)!);
       }
     }
 
     if (level.length === 0) {
       // Circular dependency - just start remaining in any order
       logSystem("Warning: circular dependency detected, starting remaining services");
-      levels.push([...remaining]);
+      levels.push([...remaining].map((n) => byName.get(n)!));
       break;
     }
 
     levels.push(level);
-    for (const name of level) {
-      remaining.delete(name);
+    for (const svc of level) {
+      remaining.delete(svc.name);
     }
   }
 
@@ -879,10 +993,10 @@ function computeStartupOrder(
 /**
  * Get the maximum grace_ms for a set of services
  */
-function getMaxGraceMs(services: Record<string, ServiceDef>, names: string[]): number {
+function getMaxGraceMs(targets: ResolvedService[]): number {
   let maxGrace = 0;
-  for (const name of names) {
-    const grace = services[name]?.healthcheck?.grace_ms ?? 0;
+  for (const target of targets) {
+    const grace = target.def.healthcheck?.grace_ms ?? 0;
     if (grace > maxGrace) {
       maxGrace = grace;
     }
@@ -894,51 +1008,56 @@ function getMaxGraceMs(services: Record<string, ServiceDef>, names: string[]): n
 // COMMANDS
 // ============================================================================
 
+/**
+ * Create SessionManagers for all groups that have services in the target list.
+ */
+function createManagers(targets: ResolvedService[], configDir: string): Map<string, SessionManager> {
+  const managers = new Map<string, SessionManager>();
+  for (const target of targets) {
+    if (!managers.has(target.group)) {
+      managers.set(target.group, new SessionManager(target.group, configDir));
+    }
+  }
+  return managers;
+}
+
+/**
+ * Create SessionManagers for all groups in config.
+ */
+function createAllManagers(config: Config, configDir: string): Map<string, SessionManager> {
+  const managers = new Map<string, SessionManager>();
+  for (const groupName of Object.keys(config.groups)) {
+    managers.set(groupName, new SessionManager(groupName, configDir));
+  }
+  return managers;
+}
+
 async function cmdStart(
-  mgr: SessionManager,
-  config: Config,
-  names: string[],
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[],
+  allServices: ResolvedService[],
   detached: boolean
 ): Promise<void> {
-  const serviceNames =
-    names.length > 0 ? names : Object.keys(config.services);
-
-  // Validate service names
-  for (const name of serviceNames) {
-    if (!config.services[name]) {
-      throw new Error(`Unknown: ${name}`);
-    }
-  }
-
-  // Validate depends_on references
-  for (const name of serviceNames) {
-    const deps = config.services[name]?.depends_on ?? [];
-    for (const dep of deps) {
-      if (!config.services[dep]) {
-        throw new Error(`Service '${name}' depends on unknown service '${dep}'`);
-      }
-    }
-  }
-
-  logSystem(`Starting ${serviceNames.length} process(es)...`);
+  logSystem(`Starting ${targets.length} process(es)...`);
 
   // Compute startup order based on dependencies
-  const levels = computeStartupOrder(config.services, serviceNames);
+  const levels = computeStartupOrder(targets);
 
   // Start services level by level
   for (let i = 0; i < levels.length; i++) {
     const level = levels[i];
 
     // Start all services in this level
-    for (const name of level) {
-      await mgr.start(name, config.services[name]);
+    for (const target of level) {
+      const mgr = managers.get(target.group)!;
+      await mgr.start(target.name, target.def);
     }
 
     // If there are more levels, wait for grace period before starting next level
     if (i < levels.length - 1) {
-      const graceMs = getMaxGraceMs(config.services, level);
+      const graceMs = getMaxGraceMs(level);
       if (graceMs > 0) {
-        logVerbose(`Waiting ${graceMs}ms grace period for: ${level.join(", ")}`);
+        logVerbose(`Waiting ${graceMs}ms grace period for: ${level.map((t) => t.name).join(", ")}`);
         await new Promise((r) => setTimeout(r, graceMs));
       }
     }
@@ -950,13 +1069,13 @@ async function cmdStart(
   }
 
   // Monitor mode
-  await monitor(mgr, config, serviceNames);
+  await monitor(managers, targets, allServices);
 }
 
 async function monitor(
-  mgr: SessionManager,
-  config: Config,
-  serviceNames: string[]
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[],
+  allServices: ResolvedService[]
 ): Promise<void> {
   logSystem("Monitoring processes... (Ctrl+C to stop all)");
 
@@ -964,7 +1083,7 @@ async function monitor(
   let stopping = false;
 
   // Start streaming logs
-  const { cleanup } = streamLogs(mgr, serviceNames, config);
+  const { cleanup } = streamLogs(managers, targets, allServices);
 
   // Handle Ctrl+C - ensure only one signal handler executes cleanup
   const handleShutdown = async (signal: string) => {
@@ -974,7 +1093,7 @@ async function monitor(
     running = false;
     cleanup();
     logSystem(`Received ${signal}, stopping all processes...`);
-    await cmdStop(mgr, config, serviceNames);
+    await cmdStop(managers, targets);
     Deno.exit(0);
   };
 
@@ -984,14 +1103,15 @@ async function monitor(
   // Monitor for dead services
   const deadServices = new Set<string>();
   while (running) {
-    for (const svc of serviceNames) {
+    for (const target of targets) {
       if (!running) break;
-      if (deadServices.has(svc)) continue;
+      if (deadServices.has(target.name)) continue;
 
-      const status = await mgr.status(svc);
+      const mgr = managers.get(target.group)!;
+      const status = await mgr.status(target.name);
       if (!status.running && status.exitCode !== undefined) {
-        log(`Exited with code ${status.exitCode}`, svc, "red");
-        deadServices.add(svc);
+        log(`Exited with code ${status.exitCode}`, target.name, "red");
+        deadServices.add(target.name);
       }
     }
 
@@ -1000,19 +1120,16 @@ async function monitor(
 }
 
 async function cmdStop(
-  mgr: SessionManager,
-  config: Config,
-  names: string[]
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[]
 ): Promise<void> {
-  const serviceNames =
-    names.length > 0 ? names : Object.keys(config.services);
-
   let stoppedAny = false;
 
   // Always loop through all services - idempotent
-  for (const name of serviceNames) {
-    if (await mgr.exists(name)) {
-      await mgr.stop(name);
+  for (const target of targets) {
+    const mgr = managers.get(target.group)!;
+    if (await mgr.exists(target.name)) {
+      await mgr.stop(target.name);
       stoppedAny = true;
     }
   }
@@ -1025,18 +1142,15 @@ async function cmdStop(
 }
 
 async function cmdKill(
-  mgr: SessionManager,
-  config: Config,
-  names: string[]
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[]
 ): Promise<void> {
-  const serviceNames =
-    names.length > 0 ? names : Object.keys(config.services);
-
   let killedAny = false;
 
-  for (const name of serviceNames) {
-    if (await mgr.exists(name)) {
-      await mgr.kill(name);
+  for (const target of targets) {
+    const mgr = managers.get(target.group)!;
+    if (await mgr.exists(target.name)) {
+      await mgr.kill(target.name);
       killedAny = true;
     }
   }
@@ -1049,45 +1163,46 @@ async function cmdKill(
 }
 
 async function cmdRestart(
-  mgr: SessionManager,
-  config: Config,
-  names: string[]
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[]
 ): Promise<void> {
-  const serviceNames =
-    names.length > 0 ? names : Object.keys(config.services);
+  logSystem(`Restarting ${targets.length} process(es)...`);
 
-  for (const name of serviceNames) {
-    if (!config.services[name]) {
-      throw new Error(`Unknown: ${name}`);
-    }
-  }
-
-  logSystem(`Restarting ${serviceNames.length} process(es)...`);
-
-  for (const name of serviceNames) {
-    await mgr.stop(name);
-    await mgr.start(name, config.services[name]);
+  for (const target of targets) {
+    const mgr = managers.get(target.group)!;
+    await mgr.stop(target.name);
+    await mgr.start(target.name, target.def);
   }
 }
 
-async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Promise<void> {
-  const sessions = await mgr.listAll();
-  const allServices = Object.keys(config.services);
-
-  print("");
-  
-  if (showAll) {
-    print(
-      `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            UPTIME      PID${c("reset")}`
-    );
-    print("─".repeat(80));
-  } else {
-    print(`${c("bold")}SERVICE        STATUS       UPTIME${c("reset")}`);
-    print("─".repeat(40));
+async function cmdPs(
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[],
+  showAll: boolean
+): Promise<void> {
+  // Gather sessions from all groups
+  const sessionsByService = new Map<string, SessionStatus>();
+  for (const [groupName, mgr] of managers) {
+    const sessions = await mgr.listAll();
+    for (const session of sessions) {
+      sessionsByService.set(session.name, session);
+    }
   }
 
-  for (const svc of allServices) {
-    const session = sessions.find((s) => s.name === svc);
+  print("");
+
+  if (showAll) {
+    print(
+      `${c("bold")}GROUP          SERVICE        STATUS       MEM    CPU  PORTS            UPTIME      PID${c("reset")}`
+    );
+    print("─".repeat(95));
+  } else {
+    print(`${c("bold")}GROUP          SERVICE        STATUS       UPTIME${c("reset")}`);
+    print("─".repeat(55));
+  }
+
+  for (const target of targets) {
+    const session = sessionsByService.get(target.name);
     let statusText: string;
     let statusColor: string;
     let uptime = "-";
@@ -1132,31 +1247,34 @@ async function cmdPs(mgr: SessionManager, config: Config, showAll: boolean): Pro
         ports = metrics.ports.length > 0 ? metrics.ports.join(",") : "-";
       }
 
-      const svcCol = svc.padEnd(14);
+      const groupCol = target.group.padEnd(14);
+      const svcCol = target.name.padEnd(14);
       const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
       const memCol = mem.padStart(5);
       const cpuCol = cpu.padStart(5);
       const portsCol = ports.padEnd(16);
       const uptimeCol = uptime.padEnd(10);
-      print(`${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptimeCol} ${pid}`);
+      print(`${groupCol} ${svcCol} ${statusCol} ${memCol} ${cpuCol}  ${portsCol} ${uptimeCol} ${pid}`);
     } else {
+      const groupCol = target.group.padEnd(14);
       const statusCol = `${c(statusColor)}${statusText.padEnd(12)}${c("reset")}`;
-      print(`${svc.padEnd(14)} ${statusCol} ${uptime}`);
+      print(`${groupCol} ${target.name.padEnd(14)} ${statusCol} ${uptime}`);
     }
   }
   print("");
 }
 
-async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
-  const allServices = Object.keys(config.services);
-  
+async function cmdTop(
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[]
+): Promise<void> {
   // Track metrics and last update time per service
   const metrics: Record<string, ProcessMetrics & { lastUpdate: number }> = {};
   const sessions: Record<string, SessionStatus> = {};
-  
+
   // Initialize
-  for (const svc of allServices) {
-    metrics[svc] = { memoryMB: 0, cpuPercent: 0, ports: [], processCount: 0, lastUpdate: 0 };
+  for (const target of targets) {
+    metrics[target.name] = { memoryMB: 0, cpuPercent: 0, ports: [], processCount: 0, lastUpdate: 0 };
   }
 
   // Refresh scheduling: services with higher CPU get refreshed more often
@@ -1197,7 +1315,7 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
   try {
     // Set up raw mode to capture keypresses
     Deno.stdin.setRaw(true);
-    
+
     // Non-blocking key reader
     const keyReader = async () => {
       const buf = new Uint8Array(1);
@@ -1228,23 +1346,27 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
       const now = Date.now();
 
       // Update session status for all services (cheap operation)
-      const sessionList = await mgr.listAll();
-      for (const svc of allServices) {
-        const session = sessionList.find((s) => s.name === svc);
-        sessions[svc] = session ?? { name: svc, running: false };
+      for (const [groupName, mgr] of managers) {
+        const sessionList = await mgr.listAll();
+        for (const target of targets) {
+          if (target.group === groupName) {
+            const session = sessionList.find((s) => s.name === target.name);
+            sessions[target.name] = session ?? { name: target.name, running: false };
+          }
+        }
       }
 
       // Smart refresh: update 2-3 services per tick based on their refresh interval
       let updated = 0;
-      for (const svc of allServices) {
-        if (!sessions[svc]?.running || !sessions[svc]?.pid) continue;
-        
-        const interval = getRefreshInterval(svc);
-        const timeSinceUpdate = now - metrics[svc].lastUpdate;
-        
+      for (const target of targets) {
+        if (!sessions[target.name]?.running || !sessions[target.name]?.pid) continue;
+
+        const interval = getRefreshInterval(target.name);
+        const timeSinceUpdate = now - metrics[target.name].lastUpdate;
+
         if (timeSinceUpdate >= interval && updated < 3) {
-          const m = await getProcessMetrics(sessions[svc].pid!);
-          metrics[svc] = { ...m, lastUpdate: now };
+          const m = await getProcessMetrics(sessions[target.name].pid!);
+          metrics[target.name] = { ...m, lastUpdate: now };
           updated++;
         }
       }
@@ -1252,13 +1374,13 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
       // Render
       let output = CLEAR;
       output += `${c("bold")}rig top${c("reset")} - press q or Ctrl+C to exit\n\n`;
-      output += `${c("bold")}SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
-      output += "─".repeat(72) + "\n";
+      output += `${c("bold")}GROUP          SERVICE        STATUS       MEM    CPU  PORTS            STARTED${c("reset")}\n`;
+      output += "─".repeat(87) + "\n";
 
-      for (const svc of allServices) {
-        const session = sessions[svc];
-        const m = metrics[svc];
-        
+      for (const target of targets) {
+        const session = sessions[target.name];
+        const m = metrics[target.name];
+
         let status: string;
         let mem = "-";
         let cpu = "-";
@@ -1274,7 +1396,7 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
         } else {
           status = `${c("green")}running${c("reset")}`;
           mem = `${m.memoryMB}M`;
-          
+
           // Color CPU based on usage
           if (m.cpuPercent > 50) {
             cpu = `${c("red")}${m.cpuPercent}%${c("reset")}`;
@@ -1283,7 +1405,7 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
           } else {
             cpu = `${m.cpuPercent}%`;
           }
-          
+
           ports = m.ports.length > 0 ? m.ports.slice(0, 3).join(",") : "-";
           if (m.ports.length > 3) ports += "...";
 
@@ -1298,17 +1420,18 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
           }
         }
 
-        const svcCol = svc.padEnd(14);
+        const groupCol = target.group.padEnd(14);
+        const svcCol = target.name.padEnd(14);
         const statusCol = status.padEnd(20);
         const memCol = mem.padStart(5);
         const cpuCol = cpu.padEnd(10);
         const portsCol = ports.padEnd(16);
 
-        output += `${svcCol} ${statusCol} ${memCol} ${cpuCol} ${portsCol} ${started}\n`;
+        output += `${groupCol} ${svcCol} ${statusCol} ${memCol} ${cpuCol} ${portsCol} ${started}\n`;
       }
 
       Deno.stdout.writeSync(new TextEncoder().encode(output));
-      
+
       tick++;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -1318,24 +1441,17 @@ async function cmdTop(mgr: SessionManager, config: Config): Promise<void> {
 }
 
 async function cmdLogs(
-  mgr: SessionManager,
-  config: Config,
-  serviceName: string | undefined,
+  managers: Map<string, SessionManager>,
+  targets: ResolvedService[],
+  allServices: ResolvedService[],
   follow: boolean,
   previous: boolean
 ): Promise<void> {
-  const serviceNames = serviceName ? [serviceName] : Object.keys(config.services);
-
-  // Validate service exists
-  if (serviceName && !config.services[serviceName]) {
-    logError(`Unknown: ${serviceName}`);
-    Deno.exit(1);
-  }
-
   // Check if log files exist
   let anyLogs = false;
-  for (const svc of serviceNames) {
-    const logFile = mgr.logFile(svc, previous);
+  for (const target of targets) {
+    const mgr = managers.get(target.group)!;
+    const logFile = mgr.logFile(target.name, previous);
     try {
       const stat = await Deno.stat(logFile);
       if (stat.size > 0) {
@@ -1353,7 +1469,7 @@ async function cmdLogs(
   }
 
   if (!anyLogs && !follow) {
-    logError(serviceName ? `No logs for '${serviceName}'` : "No logs found");
+    logError(targets.length === 1 ? `No logs for '${targets[0].name}'` : "No logs found");
     Deno.exit(1);
   }
 
@@ -1365,7 +1481,7 @@ async function cmdLogs(
   if (follow) {
     // Follow mode - stream logs, Ctrl+C just exits (doesn't stop services)
     let running = true;
-    const { cleanup } = streamLogs(mgr, serviceNames, config);
+    const { cleanup } = streamLogs(managers, targets, allServices);
 
     Deno.addSignalListener("SIGINT", () => {
       running = false;
@@ -1378,15 +1494,16 @@ async function cmdLogs(
     }
   } else {
     // Dump mode - show all logs and exit
-    for (const svc of serviceNames) {
-      const logFile = mgr.logFile(svc, previous);
-      const color = getServiceColor(config.services, svc);
+    for (const target of targets) {
+      const mgr = managers.get(target.group)!;
+      const logFile = mgr.logFile(target.name, previous);
+      const color = getServiceColor(allServices, target.name);
       try {
         const content = await Deno.readTextFile(logFile);
         for (const line of content.split("\n")) {
           const cleanLine = stripControlCodes(line);
           if (cleanLine.trim()) {
-            log(cleanLine, svc, color);
+            log(cleanLine, target.name, color);
           }
         }
       } catch {
@@ -1408,14 +1525,14 @@ async function cmdInit(): Promise<void> {
     }
   }
 
-  const template = `group: myapp
-
-services:
-  api:
-    command: npm start
-    working_dir: ./somewhere
-    environment:
-      PORT: 3000
+  const template = `groups:
+  myapp:
+    services:
+      api:
+        command: npm start
+        working_dir: ./somewhere
+        environment:
+          PORT: 3000
 `;
 
   try {
@@ -1427,34 +1544,35 @@ services:
   logSystem("Created rig.yaml");
 }
 
-function cmdConfig(config: Config, serviceNames: string[], raw: boolean, json: boolean): void {
-  const servicesToShow =
-    serviceNames.length > 0
-      ? serviceNames.filter((s) => config.services[s])
-      : Object.keys(config.services);
-
-  if (servicesToShow.length === 0) {
+function cmdConfig(
+  config: Config,
+  targets: ResolvedService[],
+  allServices: ResolvedService[],
+  raw: boolean,
+  json: boolean
+): void {
+  if (targets.length === 0) {
     logError("No matching services found");
     return;
   }
 
   if (raw || json) {
-    const output: Config = {
-      group: config.group,
-      services: {},
-    };
+    // Build output structure matching config format
+    const output: { groups: Record<string, { services: Record<string, unknown> }> } = { groups: {} };
 
-    for (const name of servicesToShow) {
-      const def = config.services[name];
+    for (const target of targets) {
+      if (!output.groups[target.group]) {
+        output.groups[target.group] = { services: {} };
+      }
+
       const cleanDef: Record<string, unknown> = {};
-      
-      for (const [key, value] of Object.entries(def)) {
+      for (const [key, value] of Object.entries(target.def)) {
         if (value !== undefined) {
           cleanDef[key] = value;
         }
       }
-      
-      output.services[name] = cleanDef as unknown as ServiceDef;
+
+      output.groups[target.group].services[target.name] = cleanDef;
     }
 
     if (json) {
@@ -1468,12 +1586,11 @@ function cmdConfig(config: Config, serviceNames: string[], raw: boolean, json: b
   const skip = new Set(["command", "color"]);
   const cwd = Deno.cwd();
 
-  for (const name of servicesToShow) {
-    const def = config.services[name];
-    const color = getServiceColor(config.services, name);
+  for (const target of targets) {
+    const color = getServiceColor(allServices, target.name);
 
     const props: string[] = [];
-    for (const [key, value] of Object.entries(def)) {
+    for (const [key, value] of Object.entries(target.def)) {
       if (!value || skip.has(key)) continue;
       if (Array.isArray(value)) {
         props.push(`${key}=[${value.join(",")}]`);
@@ -1487,7 +1604,7 @@ function cmdConfig(config: Config, serviceNames: string[], raw: boolean, json: b
     }
 
     const propsStr = props.length > 0 ? ` ${c("dim")}${props.join(" ")}${c("reset")}` : "";
-    print(`${c(color)}${name.padEnd(12)}${c("reset")} ${def.command}${propsStr}`);
+    print(`${c("dim")}${target.group.padEnd(12)}${c("reset")} ${c(color)}${target.name.padEnd(12)}${c("reset")} ${target.def.command}${propsStr}`);
   }
 }
 
@@ -1500,44 +1617,46 @@ function printUsage(): void {
 rig - lightweight, tmux-based process manager
 
 USAGE:
-  rig <command> [options] [names...]
+  rig <command> [options] [services...]
 
 COMMANDS:
   init                      Create rig.yaml in current directory
-  start/up [names...]       Start processes (foreground, streaming logs)
-  start/up -d [names...]    Start processes in background (detached)
-  stop/down [names...]      Stop processes (graceful)
-  kill [names...]           Force kill with SIGKILL
-  restart [names...]        Restart processes
+  start/up [services...]    Start processes (foreground, streaming logs)
+  start/up -d [services...] Start processes in background (detached)
+  stop/down [services...]   Stop processes (graceful)
+  kill [services...]        Force kill with SIGKILL
+  restart [services...]     Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
-  logs/tail [-f] [--prev] [name]  Show logs (--prev for last run)
-  config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
+  logs/tail [-f] [--prev] [service]  Show logs (--prev for last run)
+  config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
   version                   Show version
 
 OPTIONS:
+  -g, --group <name>        Target entire group(s) instead of services
   -v, --verbose             Enable verbose logging for debugging
 
 EXAMPLES:
-  rig up                    Start all processes
+  rig up                    Start all processes (all groups)
   rig up -d                 Start all in background
-  rig start api worker      Start specific processes
+  rig start api worker      Start specific services
+  rig start -g backend      Start all services in backend group
   rig down                  Stop all processes (graceful)
+  rig stop -g backend       Stop all services in backend group
   rig kill                  Force kill all processes
-  rig kill api              Force kill specific process
-  rig restart api           Restart single process
+  rig kill api              Force kill specific service
+  rig restart -g backend    Restart entire group
   rig ps                    Show status
+  rig ps -g backend         Show status for group only
   rig logs                  Dump all logs
   rig logs -f               Follow all logs (Ctrl+C to exit)
   rig logs api              Dump api logs
   rig logs -f api           Follow api logs
   rig logs --prev           Show previous run's logs
-  rig config                Show all tmux commands
+  rig config                Show all config
   rig config --raw          Show raw YAML config
   rig config --json         Show raw JSON config
-  rig config api            Show command for specific process
-  rig config --raw api      Show raw YAML for specific service
-  rig config --json api     Show raw JSON for specific service
+  rig config -g backend     Show config for group
 
 CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
@@ -1554,7 +1673,9 @@ async function main(): Promise<void> {
   // Parse args with @std/cli
   const args = parseArgs(Deno.args, {
     boolean: ["d", "f", "full", "help", "h", "V", "version", "raw", "json", "verbose", "v", "prev"],
-    alias: { f: "full", h: "help", V: "version", v: "verbose" },
+    string: ["g", "group"],
+    collect: ["g", "group"],
+    alias: { f: "full", h: "help", V: "version", v: "verbose", g: "group" },
   });
 
   // Set global verbose flag
@@ -1562,6 +1683,9 @@ async function main(): Promise<void> {
 
   const [command, ...servicesRaw] = args._.map(String);
   const services = servicesRaw.flatMap((s) => s.split(",").map((n) => n.trim()).filter((n) => n.length > 0));
+
+  // Collect -g/--group flags into array
+  const groupFlags: string[] = (args.group as string[] ?? []).filter((g) => g.length > 0);
 
   if (args.version || command === "version") {
     print(VERSION);
@@ -1574,35 +1698,44 @@ async function main(): Promise<void> {
   }
 
   // Commands that need config
-  if (["start", "up", "stop", "down", "kill", "restart", "ps", "list", "top", "config"].includes(command)) {
+  if (["start", "up", "stop", "down", "kill", "restart", "ps", "list", "top", "config", "logs", "tail"].includes(command)) {
     try {
       const { config, configDir } = await loadConfig();
-      const mgr = new SessionManager(config.group, configDir);
+      const lookup = buildServiceLookup(config);
+      const allServices = getAllServices(config);
+
+      // Resolve targets based on -g flags or service names
+      const targets = resolveTargets(config, lookup, services, groupFlags);
+      const managers = createManagers(targets, configDir);
 
       switch (command) {
         case "start":
         case "up":
-          await cmdStart(mgr, config, services, args.d);
+          await cmdStart(managers, targets, allServices, args.d);
           break;
         case "stop":
         case "down":
-          await cmdStop(mgr, config, services);
+          await cmdStop(managers, targets);
           break;
         case "kill":
-          await cmdKill(mgr, config, services);
+          await cmdKill(managers, targets);
           break;
         case "restart":
-          await cmdRestart(mgr, config, services);
+          await cmdRestart(managers, targets);
           break;
         case "ps":
         case "list":
-          await cmdPs(mgr, config, args.full);
+          await cmdPs(managers, targets, args.full);
           break;
         case "top":
-          await cmdTop(mgr, config);
+          await cmdTop(managers, targets);
           break;
         case "config":
-          cmdConfig(config, services, args.raw, args.json);
+          cmdConfig(config, targets, allServices, args.raw, args.json);
+          break;
+        case "logs":
+        case "tail":
+          await cmdLogs(managers, targets, allServices, args.f, args.prev);
           break;
       }
     } catch (err) {
@@ -1614,18 +1747,6 @@ async function main(): Promise<void> {
     }
   } else if (command === "init") {
     await cmdInit();
-  } else if (command === "logs" || command === "tail") {
-    try {
-      const { config, configDir } = await loadConfig();
-      const mgr = new SessionManager(config.group, configDir);
-      await cmdLogs(mgr, config, services[0], args.f, args.prev);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("Config file not found")) {
-        console.error("No config file found. Run 'rig init' to create one.");
-        Deno.exit(1);
-      }
-      throw err;
-    }
   } else {
     logError(`Unknown command: ${command}`);
     printUsage();

@@ -1,23 +1,25 @@
-group: example
+groups:
+  backend:
+    services:
+      db:
+        command: deno run -A db.ts
+        working_dir: .
+        healthcheck:
+          grace_ms: 500
 
-services:
-  db:
-    command: deno run -A db.ts
-    working_dir: .
-    healthcheck:
-      grace_ms: 500
+      api:
+        command: deno run -A api.ts
+        working_dir: .
+        env_file: ./api.env
+        depends_on: [db]
 
-  api:
-    command: deno run -A api.ts
-    working_dir: .
-    env_file: ./api.env
-    depends_on: [db]
+      worker:
+        command: deno run -A worker.ts
+        working_dir: .
+        depends_on: [db]
 
-  worker:
-    command: deno run -A worker.ts
-    working_dir: .
-    depends_on: [db]
-
-  web:
-    command: deno run -A web.ts
-    working_dir: .
+  frontend:
+    services:
+      web:
+        command: deno run -A web.ts
+        working_dir: .

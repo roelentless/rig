@@ -222,18 +222,19 @@ Deno.test({
         throw new Error("echo-svc running line not found in ps -f output");
       }
 
-      // Parse the line: SERVICE STATUS MEM CPU PORTS UPTIME PID
+      // Parse the line: GROUP SERVICE STATUS MEM CPU PORTS UPTIME PID
       const parts = echoLine.trim().split(/\s+/);
-      assertEquals(parts[0], "echo-svc");
-      assertEquals(parts[1], "running");
+      assertEquals(parts[0], TEST_GROUP);  // GROUP column
+      assertEquals(parts[1], "echo-svc");   // SERVICE column
+      assertEquals(parts[2], "running");    // STATUS column
 
       // MEM should match format like "5M" or "0M"
-      const memMatch = parts[2].match(/^\d+M$/);
-      assertEquals(memMatch !== null, true, `MEM should match \\dM format, got: ${parts[2]}`);
+      const memMatch = parts[3].match(/^\d+M$/);
+      assertEquals(memMatch !== null, true, `MEM should match \\dM format, got: ${parts[3]}`);
 
       // CPU should match format like "0.1%" or "0%"
-      const cpuMatch = parts[3].match(/^\d+(\.\d+)?%$/);
-      assertEquals(cpuMatch !== null, true, `CPU should match percentage format, got: ${parts[3]}`);
+      const cpuMatch = parts[4].match(/^\d+(\.\d+)?%$/);
+      assertEquals(cpuMatch !== null, true, `CPU should match percentage format, got: ${parts[4]}`);
 
       // PID is at the end - should be a valid number
       const pid = parseInt(parts[parts.length - 1], 10);
@@ -251,24 +252,24 @@ Deno.test({
     const testTmpDir = getTestTmpDir();
     await ensureTestTmpDir();
     const depsConfig = `
-group: ${TEST_GROUP}
+groups:
+  ${TEST_GROUP}:
+    services:
+      db:
+        command: sh -c "echo 'db started'; sleep 30"
+        working_dir: /tmp
+        healthcheck:
+          grace_ms: 200
 
-services:
-  db:
-    command: sh -c "echo 'db started'; sleep 30"
-    working_dir: /tmp
-    healthcheck:
-      grace_ms: 200
+      api:
+        command: sh -c "echo 'api started'; sleep 30"
+        working_dir: /tmp
+        depends_on: [db]
 
-  api:
-    command: sh -c "echo 'api started'; sleep 30"
-    working_dir: /tmp
-    depends_on: [db]
-
-  worker:
-    command: sh -c "echo 'worker started'; sleep 30"
-    working_dir: /tmp
-    depends_on: [db]
+      worker:
+        command: sh -c "echo 'worker started'; sleep 30"
+        working_dir: /tmp
+        depends_on: [db]
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, depsConfig);
     try {
@@ -304,19 +305,19 @@ Deno.test({
     const testTmpDir = getTestTmpDir();
     await ensureTestTmpDir();
     const graceConfig = `
-group: ${TEST_GROUP}
+groups:
+  ${TEST_GROUP}:
+    services:
+      slow-db:
+        command: sh -c "echo 'slow-db started at '\$(date +%s%3N); sleep 30"
+        working_dir: /tmp
+        healthcheck:
+          grace_ms: 300
 
-services:
-  slow-db:
-    command: sh -c "echo 'slow-db started at '\$(date +%s%3N); sleep 30"
-    working_dir: /tmp
-    healthcheck:
-      grace_ms: 300
-
-  client:
-    command: sh -c "echo 'client started at '\$(date +%s%3N); sleep 30"
-    working_dir: /tmp
-    depends_on: [slow-db]
+      client:
+        command: sh -c "echo 'client started at '\$(date +%s%3N); sleep 30"
+        working_dir: /tmp
+        depends_on: [slow-db]
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, graceConfig);
     try {
@@ -343,13 +344,13 @@ Deno.test({
     const testTmpDir = getTestTmpDir();
     await ensureTestTmpDir();
     const invalidConfig = `
-group: ${TEST_GROUP}
-
-services:
-  api:
-    command: sh -c "echo 'api'; sleep 30"
-    working_dir: /tmp
-    depends_on: [nonexistent]
+groups:
+  ${TEST_GROUP}:
+    services:
+      api:
+        command: sh -c "echo 'api'; sleep 30"
+        working_dir: /tmp
+        depends_on: [nonexistent]
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, invalidConfig);
     try {
@@ -372,13 +373,13 @@ Deno.test({
     await Deno.writeTextFile(`${testTmpDir}/test.env`, "MY_VAR=from_env_file\n");
 
     const envConfig = `
-group: ${TEST_GROUP}
-
-services:
-  env-test:
-    command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
-    working_dir: /tmp
-    env_file: ./test.env
+groups:
+  ${TEST_GROUP}:
+    services:
+      env-test:
+        command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
+        working_dir: /tmp
+        env_file: ./test.env
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, envConfig);
 
@@ -402,15 +403,15 @@ Deno.test({
     await ensureTestTmpDir();
 
     const optionalEnvConfig = `
-group: ${TEST_GROUP}
-
-services:
-  optional-env:
-    command: sh -c "echo 'started'; sleep 30"
-    working_dir: /tmp
-    env_file:
-      - path: ./nonexistent.env
-        required: false
+groups:
+  ${TEST_GROUP}:
+    services:
+      optional-env:
+        command: sh -c "echo 'started'; sleep 30"
+        working_dir: /tmp
+        env_file:
+          - path: ./nonexistent.env
+            required: false
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, optionalEnvConfig);
 
@@ -435,15 +436,15 @@ Deno.test({
     await Deno.writeTextFile(`${testTmpDir}/override.env`, "MY_VAR=from_file\n");
 
     const overrideConfig = `
-group: ${TEST_GROUP}
-
-services:
-  override-test:
-    command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
-    working_dir: /tmp
-    env_file: ./override.env
-    environment:
-      MY_VAR: from_inline
+groups:
+  ${TEST_GROUP}:
+    services:
+      override-test:
+        command: sh -c "echo MY_VAR=\\$MY_VAR; sleep 30"
+        working_dir: /tmp
+        env_file: ./override.env
+        environment:
+          MY_VAR: from_inline
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, overrideConfig);
 
@@ -468,13 +469,13 @@ Deno.test({
     await ensureTestTmpDir();
 
     const requiredEnvConfig = `
-group: ${TEST_GROUP}
-
-services:
-  required-env:
-    command: sh -c "echo 'test'; sleep 30"
-    working_dir: /tmp
-    env_file: ./definitely-missing.env
+groups:
+  ${TEST_GROUP}:
+    services:
+      required-env:
+        command: sh -c "echo 'test'; sleep 30"
+        working_dir: /tmp
+        env_file: ./definitely-missing.env
 `;
     await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, requiredEnvConfig);
 

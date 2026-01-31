@@ -9,23 +9,23 @@ export { assertEquals, assertStringIncludes };
 export const TEST_GROUP = "rig-test";
 
 export const TEST_CONFIG = `
-group: ${TEST_GROUP}
+groups:
+  ${TEST_GROUP}:
+    services:
+      echo-svc:
+        command: sh -c "echo 'hello from echo-svc'; sleep 30"
+        working_dir: /tmp
+        color: cyan
 
-services:
-  echo-svc:
-    command: sh -c "echo 'hello from echo-svc'; sleep 30"
-    working_dir: /tmp
-    color: cyan
+      counter:
+        command: sh -c "for i in 1 2 3 4 5; do echo count-\\$i; sleep 1; done; sleep 30"
+        working_dir: /tmp
+        color: yellow
 
-  counter:
-    command: sh -c "for i in 1 2 3 4 5; do echo count-\\$i; sleep 1; done; sleep 30"
-    working_dir: /tmp
-    color: yellow
-
-  quick-exit:
-    command: sh -c "echo 'quick exit'; exit 42"
-    working_dir: /tmp
-    color: red
+      quick-exit:
+        command: sh -c "echo 'quick exit'; exit 42"
+        working_dir: /tmp
+        color: red
 `;
 
 // Get the repo root (parent of test folder)

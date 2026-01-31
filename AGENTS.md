@@ -2,6 +2,10 @@
 
 **Compose Spec Alignment**: Where it makes sense, we align with the [Compose Specification](https://github.com/compose-spec/compose-spec/blob/main/spec.md) for naming and behavior of new features.
 
+## Off-Limits Directories
+
+- `rfc/` - Contains work tasks and planning documents. Do not read unless specifically asked.
+
 ## Core Philosophy
 
 **Stateless over stateful**: tmux IS the state. Don't add state files. Query reality.
@@ -36,16 +40,37 @@
 - Use `@std/cli/parse-args` for flag parsing
 - Don't use `stopEarly: true` if flags can appear after the command
 
+## Config Structure
+
+Config uses multi-group format with services nested under groups:
+
+```yaml
+groups:
+  backend:
+    services:
+      api: { command: ..., working_dir: ... }
+      db:  { command: ..., working_dir: ... }
+  frontend:
+    services:
+      web: { command: ..., working_dir: ... }
+```
+
+Key rules:
+- Service names must be unique across all groups
+- Groups are targeted with `-g/--group` flag: `rig start -g backend`
+- Default CLI targets are services: `rig start api db`
+- One SessionManager instance per group (tmux sessions: `{group}-{service}`)
+
 ## Code Structure
 
 ```
-Types & Interfaces     → Data shapes
+Types & Interfaces     → Data shapes (Config, GroupDef, ServiceDef, ResolvedService)
 Constants              → Colors, config names
 Utilities              → log(), buildEnvString()
 Process Metrics        → getProcessTree(), getProcessMetrics()
 Tmux Check             → checkTmux(), printTmuxInstallGuide()
-Config                 → loadConfig(), findConfig()
-SessionManager         → Class managing tmux sessions
+Config                 → loadConfig(), buildServiceLookup(), resolveTargets()
+SessionManager         → Class managing tmux sessions (one per group)
 Commands               → cmdStart(), cmdStop(), cmdPs(), cmdTop(), etc.
 CLI                    → main(), printUsage()
 ```
@@ -113,6 +138,5 @@ Tests automatically detect the platform via `Deno.build.os` and prefix test name
 ## Future Considerations
 
 - Auto-restart: tmux has `respawn-pane` but adds complexity
-- Log persistence: `pipe-pane` can tee to files
-- Health checks: Custom command per process
-- Dependencies: `depends_on` ordering (keep simple for now)
+- Multi-file config merging (`rig -f file1.yaml -f file2.yaml`)
+- Group-level settings (shared env, working_dir defaults)

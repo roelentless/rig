@@ -50,25 +50,27 @@ Ensure `~/.deno/bin` is in your PATH.
 Create `rig.yaml` somewhere:
 
 ```yaml
-group: myapp
+groups:
+  backend:
+    services:
+      db:
+        command: docker run --rm -p 5432:5432 -v myapp-db:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:16
+        working_dir: .
+        healthcheck:
+          grace_ms: 1000          # Wait for postgres to be ready
 
-services:
-  db:
-    command: docker run --rm -p 5432:5432 -v myapp-db:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:16
-    working_dir: .
-    healthcheck:
-      grace_ms: 1000          # Wait for postgres to be ready
+      api:
+        command: deno run -A server.ts
+        working_dir: ./backend
+        environment:
+          PORT: 3000
+        depends_on: [db]          # Start after db
 
-  api:
-    command: deno run -A server.ts
-    working_dir: ./backend
-    environment:
-      PORT: 3000
-    depends_on: [db]          # Start after db
-
-  web:
-    command: npm run dev
-    working_dir: ./frontend
+  frontend:
+    services:
+      web:
+        command: npm run dev
+        working_dir: ./frontend
 ```
 
 See the [example/](example/) folder for a working configuration.
@@ -79,44 +81,46 @@ See the [example/](example/) folder for a working configuration.
 rig - lightweight, tmux-based process manager
 
 USAGE:
-  rig <command> [options] [names...]
+  rig <command> [options] [services...]
 
 COMMANDS:
   init                      Create rig.yaml in current directory
-  start/up [names...]       Start processes (foreground, streaming logs)
-  start/up -d [names...]    Start processes in background (detached)
-  stop/down [names...]      Stop processes (graceful)
-  kill [names...]           Force kill with SIGKILL
-  restart [names...]        Restart processes
+  start/up [services...]    Start processes (foreground, streaming logs)
+  start/up -d [services...] Start processes in background (detached)
+  stop/down [services...]   Stop processes (graceful)
+  kill [services...]        Force kill with SIGKILL
+  restart [services...]     Restart processes
   ps/list [-f|--full]       Show status (add -f for mem/cpu/ports)
   top                       Live dashboard with auto-refreshing metrics
-  logs/tail [-f] [--prev] [name]  Show logs (--prev for last run)
-  config [--raw|--json] [names...] Show tmux commands (--raw for YAML, --json for JSON)
+  logs/tail [-f] [--prev] [service]  Show logs (--prev for last run)
+  config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
   version                   Show version
 
 OPTIONS:
+  -g, --group <name>        Target entire group(s) instead of services
   -v, --verbose             Enable verbose logging for debugging
 
 EXAMPLES:
-  rig up                    Start all processes
+  rig up                    Start all processes (all groups)
   rig up -d                 Start all in background
-  rig start api worker      Start specific processes
+  rig start api worker      Start specific services
+  rig start -g backend      Start all services in backend group
   rig down                  Stop all processes (graceful)
+  rig stop -g backend       Stop all services in backend group
   rig kill                  Force kill all processes
-  rig kill api              Force kill specific process
-  rig restart api           Restart single process
+  rig kill api              Force kill specific service
+  rig restart -g backend    Restart entire group
   rig ps                    Show status
+  rig ps -g backend         Show status for group only
   rig logs                  Dump all logs
   rig logs -f               Follow all logs (Ctrl+C to exit)
   rig logs api              Dump api logs
   rig logs -f api           Follow api logs
   rig logs --prev           Show previous run's logs
-  rig config                Show all tmux commands
+  rig config                Show all config
   rig config --raw          Show raw YAML config
   rig config --json         Show raw JSON config
-  rig config api            Show command for specific process
-  rig config --raw api      Show raw YAML for specific service
-  rig config --json api     Show raw JSON for specific service
+  rig config -g backend     Show config for group
 
 CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
@@ -125,21 +129,23 @@ CONFIG:
 ## Config reference
 
 ```yaml
-group: myapp                    # Required. Prefix for tmux sessions
-
-services:
-  api:
-    command: deno run -A app.ts  # Required. Command to run
-    working_dir: ./backend       # Required. Working directory
-    environment:                 # Optional. Environment variables
-      PORT: 3000
-      DEBUG: true
-    env_file: ./api.env          # Optional. Load env from file
-    color: cyan                  # Optional. Log color
-    depends_on: [db, cache]      # Optional. Start after these services
-    healthcheck:                 # Optional. Health check settings
-      grace_ms: 500              # Wait before starting dependents
+groups:
+  backend:                         # Group name (alphanumeric, hyphens, underscores)
+    services:
+      api:
+        command: deno run -A app.ts  # Required. Command to run
+        working_dir: ./backend       # Required. Working directory
+        environment:                 # Optional. Environment variables
+          PORT: 3000
+          DEBUG: true
+        env_file: ./api.env          # Optional. Load env from file
+        color: cyan                  # Optional. Log color
+        depends_on: [db, cache]      # Optional. Start after these services
+        healthcheck:                 # Optional. Health check settings
+          grace_ms: 500              # Wait before starting dependents
 ```
+
+Service names must be unique across all groups.
 
 ### env_file
 
@@ -168,10 +174,14 @@ Rig stores logs in `.rig/logs/{group}/{service}/`:
 ```
 .rig/
   logs/
-    myapp/
-      api/
+    backend/
+      db/
         current.log    # Current run
         previous.log   # Previous run (rotated on restart)
+      api/
+        current.log
+        previous.log
+    frontend/
       web/
         current.log
         previous.log
