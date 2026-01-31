@@ -4,7 +4,7 @@
 
 # rig
 
-A lightweight, tmux-based process manager for compose-like workflows without Docker. Built for speed and simplicity.
+A lightweight compose-like dev workflow tool for services and tasks.
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/roelentless/rig/develop/assets/cli.gif" width="600"/>
@@ -12,17 +12,25 @@ A lightweight, tmux-based process manager for compose-like workflows without Doc
 
 ## What it does
 
+**Services** - long-running processes via tmux:
 ```bash
-rig init      # Creates rig.yaml config
-rig up        # Start all processes, stream logs (Ctrl+C stops all)
+rig up        # Start all services, stream logs (Ctrl+C stops all)
 rig up -d     # Start in background (detached)
-rig down      # Stop all processes (graceful)
-rig kill      # Force kill with SIGKILL
+rig down      # Stop all services (graceful)
 rig ps        # Show status
 rig logs -f   # Follow logs
 ```
 
-Processes run in tmux sessions - they survive terminal close and can be reattached.
+**Tasks** - one-off commands:
+```bash
+rig tasks                       # List all tasks
+rig run backend.build           # Run a group-level task
+rig run backend.api.test        # Run a service-level task
+rig run backend.api.test --watch  # Pass args to a task
+```
+
+Services run in tmux sessions - they survive terminal close and can be reattached.
+Tasks execute directly - they pass through stdin/stdout and exit codes.
 
 ## Install
 
@@ -54,17 +62,29 @@ groups:
   backend:
     services:
       db:
-        command: docker run --rm -p 5432:5432 -v myapp-db:/var/lib/postgresql/data -e POSTGRES_PASSWORD=dev postgres:16
+        command: docker run --rm -p 5432:5432 postgres:16
         working_dir: .
         healthcheck:
-          grace_ms: 1000          # Wait for postgres to be ready
+          grace_ms: 1000
 
       api:
         command: deno run -A server.ts
         working_dir: ./backend
         environment:
           PORT: 3000
-        depends_on: [db]          # Start after db
+        depends_on: [db]
+        tasks:                           # Service-level tasks
+          test:
+            command: deno test -A
+          build:
+            command: deno compile -A -o dist/api server.ts
+            description: Compile to binary
+
+    tasks:                               # Group-level tasks
+      deploy:
+        command: ./scripts/deploy.sh
+        working_dir: .
+        description: Deploy backend
 
   frontend:
     services:
@@ -78,12 +98,12 @@ See the [example/](example/) folder for a working configuration.
 ## Commands
 
 ```
-rig - lightweight, tmux-based process manager
+rig - lightweight dev workflow tool for services and tasks
 
 USAGE:
   rig <command> [options] [services...]
 
-COMMANDS:
+SERVICES:
   init                      Create rig.yaml in current directory
   start/up [services...]    Start processes (foreground, streaming logs)
   start/up -d [services...] Start processes in background (detached)
@@ -94,7 +114,14 @@ COMMANDS:
   top                       Live dashboard with auto-refreshing metrics
   logs/tail [-f] [--prev] [service]  Show logs (--prev for last run)
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
+
+TASKS:
+  tasks [--group <name>]       List all tasks
+  run/task <path> [args...]    Run a task (group.name or group.service.name)
+
+OTHER:
   version                   Show version
+  help                      Show this help
 
 OPTIONS:
   -g, --group <name>        Target entire group(s) instead of services
@@ -108,25 +135,23 @@ EXAMPLES:
   rig down                  Stop all processes (graceful)
   rig stop -g backend       Stop all services in backend group
   rig kill                  Force kill all processes
-  rig kill api              Force kill specific service
   rig restart -g backend    Restart entire group
   rig ps                    Show status
-  rig ps -g backend         Show status for group only
-  rig logs                  Dump all logs
-  rig logs -f               Follow all logs (Ctrl+C to exit)
-  rig logs api              Dump api logs
-  rig logs -f api           Follow api logs
-  rig logs --prev           Show previous run's logs
-  rig config                Show all config
-  rig config --raw          Show raw YAML config
+  rig logs -f               Follow all logs
+  rig logs --prev api       Show previous logs for api
+  rig tasks                 List all tasks
+  rig run backend.deploy    Run a group-level task
+  rig run backend.api.build Run a service-level task
+  rig run backend.api.test --watch  Pass args to a task
   rig config --json         Show raw JSON config
-  rig config -g backend     Show config for group
 
 CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
 ```
 
 ## Config reference
+
+### Services
 
 ```yaml
 groups:
@@ -143,9 +168,43 @@ groups:
         depends_on: [db, cache]      # Optional. Start after these services
         healthcheck:                 # Optional. Health check settings
           grace_ms: 500              # Wait before starting dependents
+        tasks:                       # Optional. Service-level tasks
+          test:
+            command: deno test -A
 ```
 
 Service names must be unique across all groups.
+
+### Tasks
+
+Tasks can be defined at the group level or service level:
+
+```yaml
+groups:
+  backend:
+    services:
+      api:
+        # ... service config ...
+        tasks:                       # Service-level: inherits service env/working_dir
+          test:
+            command: deno test -A
+          build:
+            command: deno compile -A -o dist/api server.ts
+            environment:             # Optional: overrides/extends service env
+              NODE_ENV: production
+            description: Compile API
+
+    tasks:                           # Group-level: standalone
+      deploy:
+        command: ./scripts/deploy.sh
+        working_dir: .               # Required for group tasks
+        description: Deploy backend
+```
+
+- **Service tasks** inherit `working_dir` and `environment` from their parent service
+- **Group tasks** must specify `working_dir` (no parent to inherit from)
+- Tasks execute directly (not via tmux) - stdin/stdout pass through
+- Exit codes propagate - `rig run backend.build && rig run backend.deploy`
 
 ### env_file
 
@@ -199,7 +258,7 @@ deno uninstall -g rig
 
 ## How it works
 
-tmux is the source of truth - no state files.
+tmux is the source of truth for services - no state files.
 
 - Start: `tmux new-session -d -s {group}-{name} -c {working_dir} '{command}'`
 - Logs: `tmux pipe-pane` streams output to `.rig/logs/` files
@@ -207,12 +266,16 @@ tmux is the source of truth - no state files.
 - Kill: `SIGKILL` to process tree, then cleanup tmux session
 - Status: `tmux list-sessions` filtered by group prefix
 
+Tasks execute directly via `sh -c` with inherited stdin/stdout/stderr.
+
 ## License
 
 AGPL-3.0 - See LICENSE file.
 
 ---
 
-Note: built to improve my personal workflow during development of [halebase.com](https://halebase.com) — don’t take it too seriously.
+**Alpha Software** - This project is under active development. APIs and configuration formats may change between versions.
+
+Note: built to improve my personal workflow during development of [halebase.com](https://halebase.com) — don't take it too seriously.
 
 Generated with some LLM assistance.

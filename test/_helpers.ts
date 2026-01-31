@@ -16,16 +16,42 @@ groups:
         command: sh -c "echo 'hello from echo-svc'; sleep 30"
         working_dir: /tmp
         color: cyan
+        tasks:
+          greet:
+            command: echo "hello from greet"
+          show-env:
+            command: "sh -c 'echo PORT=\$PORT'"
+            environment:
+              PORT: "3001"
 
       counter:
-        command: sh -c "for i in 1 2 3 4 5; do echo count-\\$i; sleep 1; done; sleep 30"
+        command: sh -c "for i in 1 2 3 4 5; do echo count-\$i; sleep 1; done; sleep 30"
         working_dir: /tmp
         color: yellow
+        environment:
+          COUNT_VAR: "from-service"
+        tasks:
+          check-env:
+            command: "sh -c 'echo COUNT_VAR=\$COUNT_VAR EXTRA=\$EXTRA'"
+            environment:
+              EXTRA: "from-task"
 
       quick-exit:
         command: sh -c "echo 'quick exit'; exit 42"
         working_dir: /tmp
         color: red
+
+    tasks:
+      group-cmd:
+        command: echo "group command output"
+        working_dir: /tmp
+        description: A test group task
+      exit-with-code:
+        command: sh -c "exit 7"
+        working_dir: /tmp
+      echo-args:
+        command: "sh -c 'echo args: \$*' --"
+        working_dir: /tmp
 `;
 
 // Get the repo root (parent of test folder)

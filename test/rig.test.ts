@@ -29,8 +29,9 @@ Deno.test({
     const { stdout, code } = await rig(["help"]);
     assertEquals(code, 0);
     const clean = stripAnsi(stdout);
-    assertStringIncludes(clean, "rig - lightweight, tmux-based process manager");
-    assertStringIncludes(clean, "COMMANDS:");
+    assertStringIncludes(clean, "rig - lightweight dev workflow tool");
+    assertStringIncludes(clean, "SERVICES:");
+    assertStringIncludes(clean, "TASKS:");
   },
 });
 
@@ -483,6 +484,142 @@ groups:
       const { code, stderr } = await rig(["start", "-d"]);
       assertEquals(code, 1);
       assertStringIncludes(stderr, "Failed to load env file");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+// ============================================================================
+// TASK TESTS
+// ============================================================================
+
+Deno.test({
+  name: `[${PLATFORM}] rig tasks - lists all tasks`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["tasks"]);
+      assertEquals(code, 0);
+      const clean = stripAnsi(stdout);
+      // New format shows path and command
+      assertStringIncludes(clean, `${TEST_GROUP}.group-cmd`);
+      assertStringIncludes(clean, `${TEST_GROUP}.echo-svc.greet`);
+      assertStringIncludes(clean, "A test group task");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run group.task - runs group-level task`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.group-cmd`]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "group command output");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run group.service.task - runs service-level task`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.echo-svc.greet`]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "hello from greet");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - passes exit code through`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code } = await rig(["run", `${TEST_GROUP}.exit-with-code`]);
+      assertEquals(code, 7);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - service task inherits service env`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.counter.check-env`]);
+      assertEquals(code, 0);
+      // Service env (COUNT_VAR=from-service) merged with task env (EXTRA=from-task)
+      assertStringIncludes(stdout, "COUNT_VAR=from-service");
+      assertStringIncludes(stdout, "EXTRA=from-task");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - task env overrides service env`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      // show-env task has PORT=3001, which should work independently
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.echo-svc.show-env`]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "PORT=3001");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - passes arguments to command`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.echo-args`, "foo", "bar", "baz"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "args: foo bar baz");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - unknown task gives error`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.nonexistent`]);
+      assertEquals(code, 1);
+      assertStringIncludes(stdout, "Unknown task");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - unknown group gives error`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", "badgroup.cmd"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stdout, "Unknown group");
     } finally {
       await teardown();
     }

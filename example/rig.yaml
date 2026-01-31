@@ -12,14 +12,35 @@ groups:
         working_dir: .
         env_file: ./api.env
         depends_on: [db]
+        tasks:
+          test:
+            command: deno test -A
+          check:
+            command: deno check api.ts
+            description: Type check the API
 
       worker:
         command: deno run -A worker.ts
         working_dir: .
         depends_on: [db]
 
+    tasks:
+      build:
+        command: deno compile -A -o dist/api api.ts
+        working_dir: .
+        description: Compile backend to binary
+
   frontend:
     services:
       web:
         command: deno run -A web.ts
+        working_dir: .
+        tasks:
+          build:
+            command: deno compile -A -o dist/web web.ts
+            description: Compile frontend to binary
+
+    tasks:
+      lint:
+        command: deno lint
         working_dir: .

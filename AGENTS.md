@@ -42,7 +42,7 @@
 
 ## Config Structure
 
-Config uses multi-group format with services nested under groups:
+Config uses multi-group format with services and tasks nested under groups:
 
 ```yaml
 groups:
@@ -50,6 +50,8 @@ groups:
     services:
       api: { command: ..., working_dir: ... }
       db:  { command: ..., working_dir: ... }
+    tasks:
+      deploy: { command: ..., working_dir: ... }
   frontend:
     services:
       web: { command: ..., working_dir: ... }
@@ -57,8 +59,10 @@ groups:
 
 Key rules:
 - Service names must be unique across all groups
+- Groups can have services, tasks, or both
 - Groups are targeted with `-g/--group` flag: `rig start -g backend`
 - Default CLI targets are services: `rig start api db`
+- Tasks are run via `rig run group.task` or `rig run group.service.task`
 - One SessionManager instance per group (tmux sessions: `{group}-{service}`)
 
 ## Code Structure

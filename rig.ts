@@ -29,6 +29,14 @@ interface EnvFileEntry {
   required?: boolean;  // defaults to true
 }
 
+interface TaskDef {
+  command: string;
+  working_dir?: string;                    // Required for group tasks, inherited for service tasks
+  environment?: Record<string, string>;
+  env_file?: string | EnvFileEntry[];
+  description?: string;
+}
+
 interface ServiceDef {
   command: string;
   working_dir: string;
@@ -37,14 +45,28 @@ interface ServiceDef {
   color?: string;
   depends_on?: string[];
   healthcheck?: HealthCheck;
+  tasks?: Record<string, TaskDef>;         // Service-level tasks
 }
 
 interface GroupDef {
-  services: Record<string, ServiceDef>;
+  services?: Record<string, ServiceDef>;   // Optional - group can have only tasks
+  tasks?: Record<string, TaskDef>;         // Group-level tasks
 }
 
 interface Config {
   groups: Record<string, GroupDef>;
+}
+
+// Resolved task with merged config from hierarchy
+interface ResolvedTask {
+  path: string;           // e.g., "backend.api.build" or "backend.deploy"
+  group: string;
+  service?: string;       // undefined for group-level tasks
+  name: string;           // task name
+  command: string;
+  working_dir: string;
+  environment?: Record<string, string>;
+  description?: string;
 }
 
 // Flattened service for easy lookup
@@ -437,12 +459,17 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
     }
 
     const g = groupDef as Record<string, unknown>;
-    if (!g.services || typeof g.services !== "object") {
-      throw new Error(`Group '${groupName}' must have a 'services' field (object)`);
+
+    // Groups can have services, tasks, or both
+    if (!g.services && !g.tasks) {
+      throw new Error(`Group '${groupName}' must have 'services' and/or 'tasks'`);
     }
 
     const services: Record<string, ServiceDef> = {};
+    const groupTasks: Record<string, TaskDef> = {};
 
+    // Parse services (if present)
+    if (g.services && typeof g.services === "object") {
     for (const [name, def] of Object.entries(g.services as Record<string, unknown>)) {
       // Check for duplicate service names across groups
       if (seenServices.has(name)) {
@@ -516,6 +543,61 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
         mergedEnvironment = { ...envFromFiles, ...environment };
       }
 
+      // Parse service-level tasks
+      let serviceTasks: Record<string, TaskDef> | undefined;
+      if (d.tasks && typeof d.tasks === "object") {
+        serviceTasks = {};
+        for (const [taskName, taskDef] of Object.entries(d.tasks as Record<string, unknown>)) {
+          const r = taskDef as Record<string, unknown>;
+          if (!r.command || typeof r.command !== "string") {
+            throw new Error(`Task '${groupName}.${name}.${taskName}' must have a 'command' field`);
+          }
+
+          // Resolve working_dir if specified (otherwise inherited from service at resolve time)
+          let taskWorkingDir = r.working_dir as string | undefined;
+          if (taskWorkingDir && !taskWorkingDir.startsWith("/")) {
+            taskWorkingDir = `${configDir}/${taskWorkingDir}`;
+          }
+
+          // Parse env_file for service task
+          let taskEnvFileEntries: EnvFileEntry[] = [];
+          if (r.env_file) {
+            if (typeof r.env_file === "string") {
+              taskEnvFileEntries = [{ path: r.env_file, required: true }];
+            } else if (Array.isArray(r.env_file)) {
+              taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
+                if (typeof entry === "string") {
+                  return { path: entry, required: true };
+                }
+                const e = entry as Record<string, unknown>;
+                return {
+                  path: e.path as string,
+                  required: e.required !== false,
+                };
+              });
+            }
+          }
+
+          // Load env files for service task
+          let taskEnvironment = r.environment
+            ? Object.fromEntries(
+                Object.entries(r.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+              )
+            : undefined;
+          if (taskEnvFileEntries.length > 0) {
+            const envFromFiles = await loadEnvFiles(taskEnvFileEntries, configDir);
+            taskEnvironment = { ...envFromFiles, ...taskEnvironment };
+          }
+
+          serviceTasks[taskName] = {
+            command: r.command as string,
+            working_dir: taskWorkingDir,
+            environment: taskEnvironment,
+            description: r.description as string | undefined,
+          };
+        }
+      }
+
       services[name] = {
         command: d.command as string,
         working_dir,
@@ -523,14 +605,76 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
         color: d.color as string | undefined,
         depends_on,
         healthcheck,
+        tasks: serviceTasks,
       };
     }
+    } // end if (g.services)
 
-    groups[groupName] = { services };
+    // Parse group-level tasks
+    if (g.tasks && typeof g.tasks === "object") {
+      for (const [taskName, taskDef] of Object.entries(g.tasks as Record<string, unknown>)) {
+        const r = taskDef as Record<string, unknown>;
+        if (!r.command || typeof r.command !== "string") {
+          throw new Error(`Task '${groupName}.${taskName}' must have a 'command' field`);
+        }
+        if (!r.working_dir || typeof r.working_dir !== "string") {
+          throw new Error(`Task '${groupName}.${taskName}' must have a 'working_dir' field (group-level tasks cannot inherit)`);
+        }
+
+        // Resolve relative working_dir
+        let taskWorkingDir = r.working_dir as string;
+        if (!taskWorkingDir.startsWith("/")) {
+          taskWorkingDir = `${configDir}/${taskWorkingDir}`;
+        }
+
+        // Parse env_file for group task
+        let taskEnvFileEntries: EnvFileEntry[] = [];
+        if (r.env_file) {
+          if (typeof r.env_file === "string") {
+            taskEnvFileEntries = [{ path: r.env_file, required: true }];
+          } else if (Array.isArray(r.env_file)) {
+            taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
+              if (typeof entry === "string") {
+                return { path: entry, required: true };
+              }
+              const e = entry as Record<string, unknown>;
+              return {
+                path: e.path as string,
+                required: e.required !== false,
+              };
+            });
+          }
+        }
+
+        // Load env files for group task
+        let taskEnvironment = r.environment
+          ? Object.fromEntries(
+              Object.entries(r.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+            )
+          : undefined;
+        if (taskEnvFileEntries.length > 0) {
+          const envFromFiles = await loadEnvFiles(taskEnvFileEntries, configDir);
+          taskEnvironment = { ...envFromFiles, ...taskEnvironment };
+        }
+
+        groupTasks[taskName] = {
+          command: r.command as string,
+          working_dir: taskWorkingDir,
+          environment: taskEnvironment,
+          description: r.description as string | undefined,
+        };
+      }
+    }
+
+    groups[groupName] = {
+      services: Object.keys(services).length > 0 ? services : undefined,
+      tasks: Object.keys(groupTasks).length > 0 ? groupTasks : undefined,
+    };
   }
 
   // Validate depends_on references exist
   for (const [groupName, groupDef] of Object.entries(groups)) {
+    if (!groupDef.services) continue;
     for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
       for (const dep of serviceDef.depends_on ?? []) {
         if (!seenServices.has(dep)) {
@@ -553,6 +697,7 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
 function buildServiceLookup(config: Config): Map<string, ResolvedService> {
   const lookup = new Map<string, ResolvedService>();
   for (const [groupName, groupDef] of Object.entries(config.groups)) {
+    if (!groupDef.services) continue;
     for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
       lookup.set(serviceName, { group: groupName, name: serviceName, def: serviceDef });
     }
@@ -566,11 +711,133 @@ function buildServiceLookup(config: Config): Map<string, ResolvedService> {
 function getAllServices(config: Config): ResolvedService[] {
   const services: ResolvedService[] = [];
   for (const [groupName, groupDef] of Object.entries(config.groups)) {
+    if (!groupDef.services) continue;
     for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
       services.push({ group: groupName, name: serviceName, def: serviceDef });
     }
   }
   return services;
+}
+
+/**
+ * Resolve a task path (e.g., "backend.api.build" or "backend.deploy") to a ResolvedTask.
+ * For service-level tasks, merges service config with task config.
+ */
+function resolveTask(path: string, config: Config): ResolvedTask {
+  const parts = path.split(".");
+
+  if (parts.length < 2 || parts.length > 3) {
+    throw new Error(`Invalid task path '${path}'. Use 'group.task' or 'group.service.task'`);
+  }
+
+  const [groupName, secondPart, thirdPart] = parts;
+
+  const groupDef = config.groups[groupName];
+  if (!groupDef) {
+    throw new Error(`Unknown group '${groupName}'`);
+  }
+
+  if (parts.length === 2) {
+    // Could be group.task or group.service (with implicit task name?)
+    // First try group-level task
+    const taskName = secondPart;
+    if (groupDef.tasks?.[taskName]) {
+      const taskDef = groupDef.tasks[taskName];
+      return {
+        path,
+        group: groupName,
+        name: taskName,
+        command: taskDef.command,
+        working_dir: taskDef.working_dir!, // Required for group tasks
+        environment: taskDef.environment,
+        description: taskDef.description,
+      };
+    }
+
+    // Not a group task - error
+    throw new Error(`Unknown task '${path}'. Did you mean 'group.service.task'?`);
+  }
+
+  // parts.length === 3: group.service.task
+  const serviceName = secondPart;
+  const taskName = thirdPart;
+
+  const serviceDef = groupDef.services?.[serviceName];
+  if (!serviceDef) {
+    throw new Error(`Unknown service '${groupName}.${serviceName}'`);
+  }
+
+  const taskDef = serviceDef.tasks?.[taskName];
+  if (!taskDef) {
+    throw new Error(`Unknown task '${path}'`);
+  }
+
+  // Merge service config with task config
+  // Order: service env -> task env (task overrides)
+  const mergedEnv = taskDef.environment
+    ? { ...serviceDef.environment, ...taskDef.environment }
+    : serviceDef.environment;
+
+  return {
+    path,
+    group: groupName,
+    service: serviceName,
+    name: taskName,
+    command: taskDef.command,
+    working_dir: taskDef.working_dir ?? serviceDef.working_dir, // Inherit from service
+    environment: mergedEnv,
+    description: taskDef.description,
+  };
+}
+
+/**
+ * Get all tasks from config as a flat array.
+ */
+function getAllTasks(config: Config): ResolvedTask[] {
+  const tasks: ResolvedTask[] = [];
+
+  for (const [groupName, groupDef] of Object.entries(config.groups)) {
+    // Group-level tasks
+    if (groupDef.tasks) {
+      for (const [taskName, taskDef] of Object.entries(groupDef.tasks)) {
+        tasks.push({
+          path: `${groupName}.${taskName}`,
+          group: groupName,
+          name: taskName,
+          command: taskDef.command,
+          working_dir: taskDef.working_dir!,
+          environment: taskDef.environment,
+          description: taskDef.description,
+        });
+      }
+    }
+
+    // Service-level tasks
+    if (groupDef.services) {
+      for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
+        if (serviceDef.tasks) {
+          for (const [taskName, taskDef] of Object.entries(serviceDef.tasks)) {
+            const mergedEnv = taskDef.environment
+              ? { ...serviceDef.environment, ...taskDef.environment }
+              : serviceDef.environment;
+
+            tasks.push({
+              path: `${groupName}.${serviceName}.${taskName}`,
+              group: groupName,
+              service: serviceName,
+              name: taskName,
+              command: taskDef.command,
+              working_dir: taskDef.working_dir ?? serviceDef.working_dir,
+              environment: mergedEnv,
+              description: taskDef.description,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return tasks;
 }
 
 /**
@@ -593,6 +860,7 @@ function resolveTargets(
       if (!groupDef) {
         throw new Error(`Unknown group: ${groupName}`);
       }
+      if (!groupDef.services) continue;
       for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
         services.push({ group: groupName, name: serviceName, def: serviceDef });
       }
@@ -1513,6 +1781,142 @@ async function cmdLogs(
   }
 }
 
+/**
+ * Shell escape a string for safe inclusion in a shell command.
+ */
+function shellEscape(arg: string): string {
+  // If the arg contains only safe characters, return as-is
+  if (/^[a-zA-Z0-9_\-./=@:]+$/.test(arg)) {
+    return arg;
+  }
+  // Otherwise, wrap in single quotes and escape any single quotes
+  return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Run a one-off task (not via tmux).
+ * Handles signal forwarding to ensure clean termination.
+ */
+async function cmdTask(
+  resolved: ResolvedTask,
+  args: string[]
+): Promise<void> {
+  // Build the full command with args
+  const fullCommand = args.length > 0
+    ? `${resolved.command} ${args.map(shellEscape).join(" ")}`
+    : resolved.command;
+
+  logVerbose(`Running: ${fullCommand}`);
+  logVerbose(`Working dir: ${resolved.working_dir}`);
+  if (resolved.environment) {
+    logVerbose(`Environment: ${Object.keys(resolved.environment).join(", ")}`);
+  }
+
+  const proc = new Deno.Command("sh", {
+    args: ["-c", fullCommand],
+    cwd: resolved.working_dir,
+    env: { ...Deno.env.toObject(), ...resolved.environment },
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  const child = proc.spawn();
+  let signalReceived: Deno.Signal | null = null;
+  let cleaningUp = false;
+
+  // Forward signals to child process
+  const handleSignal = async (signal: Deno.Signal) => {
+    if (cleaningUp) return;
+    cleaningUp = true;
+    signalReceived = signal;
+
+    logVerbose(`Received ${signal}, forwarding to child...`);
+
+    // First try graceful termination
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // Child already dead
+    }
+
+    // Set up a timeout for forceful kill
+    const forceKillTimeout = setTimeout(async () => {
+      logVerbose("Child didn't exit, using SIGKILL...");
+      try {
+        // Kill the entire process tree
+        const pids = await getProcessTree(child.pid);
+        for (const pid of pids) {
+          try {
+            Deno.kill(pid, "SIGKILL");
+          } catch {
+            // Already dead
+          }
+        }
+      } catch {
+        // Process tree lookup failed
+      }
+    }, 5000);
+
+    // Wait for child and clean up
+    try {
+      await child.status;
+    } catch {
+      // Status already retrieved or child dead
+    }
+    clearTimeout(forceKillTimeout);
+  };
+
+  Deno.addSignalListener("SIGINT", () => handleSignal("SIGINT"));
+  Deno.addSignalListener("SIGTERM", () => handleSignal("SIGTERM"));
+
+  // Wait for child to complete
+  const status = await child.status;
+
+  // Exit with appropriate code
+  if (signalReceived) {
+    // Convention: 128 + signal number
+    Deno.exit(signalReceived === "SIGINT" ? 130 : 143);
+  }
+  Deno.exit(status.code);
+}
+
+/**
+ * List all tasks in the config.
+ */
+function cmdTaskList(
+  config: Config,
+  groupFilter?: string
+): void {
+  const tasks = getAllTasks(config);
+
+  // Filter by group if specified
+  const filtered = groupFilter
+    ? tasks.filter((t) => t.group === groupFilter)
+    : tasks;
+
+  if (filtered.length === 0) {
+    if (groupFilter) {
+      logError(`No tasks found in group '${groupFilter}'`);
+    } else {
+      logError("No tasks defined in config");
+    }
+    Deno.exit(1);
+  }
+
+  print("");
+  for (const task of filtered) {
+    // Truncate command if too long
+    const maxCmdLen = 50;
+    const cmd = task.command.length > maxCmdLen
+      ? task.command.slice(0, maxCmdLen - 3) + "..."
+      : task.command;
+    const desc = task.description ? ` ${c("dim")}${task.description}${c("reset")}` : "";
+    print(`${c("cyan")}${task.path.padEnd(30)}${c("reset")} ${cmd}${desc}`);
+  }
+  print("");
+}
+
 async function cmdInit(): Promise<void> {
   // Check if config already exists
   for (const name of CONFIG_NAMES) {
@@ -1614,12 +2018,12 @@ function cmdConfig(
 
 function printUsage(): void {
   print(`
-rig - lightweight, tmux-based process manager
+rig - lightweight dev workflow tool for services and tasks
 
 USAGE:
   rig <command> [options] [services...]
 
-COMMANDS:
+SERVICES:
   init                      Create rig.yaml in current directory
   start/up [services...]    Start processes (foreground, streaming logs)
   start/up -d [services...] Start processes in background (detached)
@@ -1630,7 +2034,14 @@ COMMANDS:
   top                       Live dashboard with auto-refreshing metrics
   logs/tail [-f] [--prev] [service]  Show logs (--prev for last run)
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
+
+TASKS:
+  tasks [--group <name>]       List all tasks
+  run/task <path> [args...]    Run a task (group.name or group.service.name)
+
+OTHER:
   version                   Show version
+  help                      Show this help
 
 OPTIONS:
   -g, --group <name>        Target entire group(s) instead of services
@@ -1644,19 +2055,15 @@ EXAMPLES:
   rig down                  Stop all processes (graceful)
   rig stop -g backend       Stop all services in backend group
   rig kill                  Force kill all processes
-  rig kill api              Force kill specific service
   rig restart -g backend    Restart entire group
   rig ps                    Show status
-  rig ps -g backend         Show status for group only
-  rig logs                  Dump all logs
-  rig logs -f               Follow all logs (Ctrl+C to exit)
-  rig logs api              Dump api logs
-  rig logs -f api           Follow api logs
-  rig logs --prev           Show previous run's logs
-  rig config                Show all config
-  rig config --raw          Show raw YAML config
+  rig logs -f               Follow all logs
+  rig logs --prev api       Show previous logs for api
+  rig tasks                 List all tasks
+  rig run backend.deploy    Run a group-level task
+  rig run backend.api.build Run a service-level task
+  rig run backend.api.test --watch  Pass args to a task
   rig config --json         Show raw JSON config
-  rig config -g backend     Show config for group
 
 CONFIG:
   Looks for rig.yaml or rig.yml in current directory.
@@ -1664,7 +2071,95 @@ CONFIG:
 }
 
 async function main(): Promise<void> {
-  // Check tmux is installed
+  // Handle 'tasks' - list all tasks
+  if (Deno.args[0] === "tasks") {
+    const listArgs = parseArgs(Deno.args.slice(1), {
+      boolean: ["help", "h", "verbose", "v"],
+      string: ["g", "group"],
+      collect: ["g", "group"],
+      alias: { h: "help", v: "verbose", g: "group" },
+    });
+
+    VERBOSE = listArgs.verbose;
+
+    if (listArgs.help) {
+      printUsage();
+      Deno.exit(0);
+    }
+
+    try {
+      const { config } = await loadConfig();
+      const groupFilter = (listArgs.group as string[] ?? [])[0];
+      cmdTaskList(config, groupFilter);
+      Deno.exit(0);
+    } catch (err) {
+      if (err instanceof Error) {
+        logError(err.message);
+      } else {
+        throw err;
+      }
+      Deno.exit(1);
+    }
+    return;
+  }
+
+  // Handle 'run' or 'task' (singular) - execute a task
+  if (Deno.args[0] === "run" || Deno.args[0] === "task") {
+    // Parse flags only (not stopEarly) to detect -l/--list, -g, etc.
+    const runArgs = parseArgs(Deno.args.slice(1), { // Skip "run"/"task"
+      boolean: ["l", "list", "help", "h", "verbose", "v"],
+      string: ["g", "group"],
+      collect: ["g", "group"],
+      alias: { l: "list", h: "help", v: "verbose", g: "group" },
+      "--": true, // Collect everything after -- in a separate array
+    });
+
+    VERBOSE = runArgs.verbose;
+
+    if (runArgs.help) {
+      printUsage();
+      Deno.exit(0);
+    }
+
+    try {
+      const { config } = await loadConfig();
+      const groupFilter = (runArgs.group as string[] ?? [])[0];
+
+      if (runArgs.list) {
+        cmdTaskList(config, groupFilter);
+        Deno.exit(0);
+      }
+
+      // Find the task path (first positional after flags)
+      // Then everything after it should pass through
+      const positionals = runArgs._.map(String);
+      const taskPath = positionals[0];
+
+      if (!taskPath) {
+        logError("Usage: rig run <path> [args...] or rig tasks");
+        Deno.exit(1);
+      }
+
+      // Pass-through args: remaining positionals + anything after --
+      const passArgs = [
+        ...positionals.slice(1),
+        ...(runArgs["--"] as string[] ?? []),
+      ];
+
+      const resolved = resolveTask(taskPath, config);
+      await cmdTask(resolved, passArgs);
+    } catch (err) {
+      if (err instanceof Error) {
+        logError(err.message);
+      } else {
+        throw err;
+      }
+      Deno.exit(1);
+    }
+    return;
+  }
+
+  // Check tmux is installed (only needed for service commands, not run)
   if (!(await checkTmux())) {
     printTmuxInstallGuide();
     Deno.exit(1);
