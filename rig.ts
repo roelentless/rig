@@ -978,6 +978,7 @@ async function loadConfigTree(rootPath: string): Promise<{ config: Config; confi
  */
 async function loadConfig(configPath?: string): Promise<{ config: Config; configDir: string }> {
   const path = configPath ?? (await findNearestConfig(Deno.cwd()));
+  logVerbose(`config=${path}`);
   return loadConfigTree(path);
 }
 
@@ -1249,12 +1250,14 @@ class SessionManager {
     let finalCommand = def.command;
     if (def.watch) {
       finalCommand = buildWatchexecCommand(def.command, def.watch, def.working_dir);
-      logVerbose(`Wrapped command with watchexec: ${finalCommand}`);
     }
 
     // Build command with environment vars
     const envStr = def.environment ? buildEnvString(def.environment) + " " : "";
     const cmd = `${envStr}exec ${finalCommand}`;
+
+    logVerbose(`command=${finalCommand}`);
+    logVerbose(`working_dir=${def.working_dir}`);
 
     // Create tmux session
     const tmux = new Deno.Command("tmux", {
@@ -2109,10 +2112,11 @@ async function cmdTask(
     ? `${resolved.command} ${args.map(shellEscape).join(" ")}`
     : resolved.command;
 
-  logVerbose(`Running: ${fullCommand}`);
-  logVerbose(`Working dir: ${resolved.working_dir}`);
+  logVerbose(`task=${resolved.path}`);
+  logVerbose(`command=${fullCommand}`);
+  logVerbose(`working_dir=${resolved.working_dir}`);
   if (resolved.environment) {
-    logVerbose(`Environment: ${Object.keys(resolved.environment).join(", ")}`);
+    logVerbose(`environment=${Object.keys(resolved.environment).join(",")}`);
   }
 
   const proc = new Deno.Command("sh", {
