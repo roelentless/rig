@@ -240,17 +240,17 @@ Services can automatically restart when files change using [watchexec](https://g
 
 ```yaml
 groups:
-  backend:
+  docs:
     services:
-      api:
-        command: deno run -A server.ts
-        working_dir: ./backend
+      mkdocs:
+        command: mkdocs serve
+        working_dir: ./docs
         watch:
-          paths: ['./src', './config']    # Directories to watch (relative to working_dir)
-          extensions: [ts, tsx, json]     # File extensions to watch
-          patterns: ['**/*.ts']           # Include glob patterns
-          ignore: ['**/test/**']          # Exclude patterns
-          debounce: 500ms                 # Wait before restarting
+          paths: ['./docs', './mkdocs.yml']  # Directories to watch (relative to working_dir)
+          extensions: [md, yml, yaml]        # File extensions to watch
+          patterns: ['**/*.md']              # Include glob patterns
+          ignore: ['**/site/**']             # Exclude patterns
+          debounce: 500ms                    # Wait before restarting
 ```
 
 All options map directly to watchexec flags - no remapping or rig-specific defaults. If `paths` is omitted, watchexec watches the service's `working_dir` by default.
