@@ -2103,10 +2103,10 @@ function shellEscape(arg: string): string {
  * Run a one-off task (not via tmux).
  * Handles signal forwarding to ensure clean termination.
  */
-async function cmdTask(
+async function runTask(
   resolved: ResolvedTask,
   args: string[]
-): Promise<void> {
+): Promise<number> {
   // Build the full command with args
   const fullCommand = args.length > 0
     ? `${resolved.command} ${args.map(shellEscape).join(" ")}`
@@ -2180,12 +2180,62 @@ async function cmdTask(
   // Wait for child to complete
   const status = await child.status;
 
-  // Exit with appropriate code
+  // Return appropriate code
   if (signalReceived) {
     // Convention: 128 + signal number
-    Deno.exit(signalReceived === "SIGINT" ? 130 : 143);
+    return signalReceived === "SIGINT" ? 130 : 143;
   }
-  Deno.exit(status.code);
+  return status.code;
+}
+
+/**
+ * Run multiple tasks sequentially (fail-fast) or in parallel.
+ */
+async function cmdTasks(
+  tasks: ResolvedTask[],
+  args: string[],
+  parallel: boolean
+): Promise<number> {
+  // Single task - simple case
+  if (tasks.length === 1) {
+    return runTask(tasks[0], args);
+  }
+
+  // Multiple tasks with args is an error
+  if (args.length > 0) {
+    logError("Cannot pass arguments when running multiple tasks");
+    return 1;
+  }
+
+  // Sequential execution (fail-fast)
+  if (!parallel) {
+    for (const task of tasks) {
+      log(`${COLORS.dim}→ ${task.path}${COLORS.reset}`);
+      const code = await runTask(task, []);
+      if (code !== 0) {
+        logError(`Task '${task.path}' failed with exit code ${code}`);
+        return code;
+      }
+    }
+    return 0;
+  }
+
+  // Parallel execution - all tasks run, failures shown immediately
+  const results = await Promise.all(
+    tasks.map(async (task) => {
+      log(`${COLORS.dim}→ ${task.path}${COLORS.reset}`);
+      const code = await runTask(task, []);
+      // Show failure immediately when it happens
+      if (code !== 0) {
+        logError(`Task '${task.path}' failed with exit code ${code}`);
+      }
+      return { task, code };
+    })
+  );
+
+  // Return first non-zero exit code, or 0 if all succeeded
+  const failed = results.find((r) => r.code !== 0);
+  return failed ? failed.code : 0;
 }
 
 /**
@@ -2565,8 +2615,9 @@ SERVICES:
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
 
 TASKS:
-  tasks [--group <name>]       List all tasks
-  run/task <path> [args...]    Run a task (group.name or group.service.name)
+  tasks [--group <name>]           List all tasks
+  run/task <task...> [-- args...]  Run task(s) (group.name or group.service.name)
+    -p, --parallel                 Run tasks in parallel
 
 MULTI-FILE:
   discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
@@ -2592,9 +2643,10 @@ EXAMPLES:
   rig logs -f               Follow all logs
   rig logs --prev api       Show previous logs for api
   rig tasks                 List all tasks
-  rig run backend.deploy    Run a group-level task
-  rig run backend.api.build Run a service-level task
-  rig run backend.api.test --watch  Pass args to a task
+  rig run backend.deploy    Run a task
+  rig run backend.api.test -- --coverage  Pass args to task
+  rig run api.test web.test Run multiple tasks sequentially
+  rig run api.test web.test -p  Run tasks in parallel
   rig config --json         Show raw JSON config
   rig discover              Scan for rig files and update imports
   rig discover --dry-run    Show what would be imported
@@ -2685,11 +2737,12 @@ DESCRIPTION:
   // Handle 'run' or 'task' (singular) - execute a task
   if (Deno.args[0] === "run" || Deno.args[0] === "task") {
     // Parse flags only (not stopEarly) to detect -l/--list, -g, etc.
+    // Note: --parallel is parsed as boolean, --parallel=N handled manually
     const runArgs = parseArgs(Deno.args.slice(1), { // Skip "run"/"task"
-      boolean: ["l", "list", "help", "h", "verbose", "v"],
+      boolean: ["l", "list", "help", "h", "verbose", "v", "parallel", "p"],
       string: ["g", "group"],
       collect: ["g", "group"],
-      alias: { l: "list", h: "help", v: "verbose", g: "group" },
+      alias: { l: "list", h: "help", v: "verbose", g: "group", p: "parallel" },
       "--": true, // Collect everything after -- in a separate array
     });
 
@@ -2709,24 +2762,25 @@ DESCRIPTION:
         Deno.exit(0);
       }
 
-      // Find the task path (first positional after flags)
-      // Then everything after it should pass through
-      const positionals = runArgs._.map(String);
-      const taskPath = positionals[0];
+      // All positionals are task paths
+      const taskPaths = runArgs._.map(String);
 
-      if (!taskPath) {
-        logError("Usage: rig run <path> [args...] or rig tasks");
+      if (taskPaths.length === 0) {
+        logError("Usage: rig run <task...> [-- args...] or rig tasks");
         Deno.exit(1);
       }
 
-      // Pass-through args: remaining positionals + anything after --
-      const passArgs = [
-        ...positionals.slice(1),
-        ...(runArgs["--"] as string[] ?? []),
-      ];
+      // Args only allowed via -- (required for clarity)
+      const passArgs = runArgs["--"] as string[] ?? [];
 
-      const resolved = resolveTask(taskPath, config);
-      await cmdTask(resolved, passArgs);
+      // -p or --parallel runs all tasks in parallel
+      const parallel = runArgs.parallel;
+
+      // Resolve all tasks
+      const resolved = taskPaths.map((p) => resolveTask(p, config));
+
+      const code = await cmdTasks(resolved, passArgs, parallel);
+      Deno.exit(code);
     } catch (err) {
       if (err instanceof Error) {
         logError(err.message);

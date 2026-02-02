@@ -23,10 +23,12 @@ rig logs -f   # Follow logs
 
 **Tasks** - one-off commands:
 ```bash
-rig tasks                       # List all tasks
-rig run backend.build           # Run a group-level task
-rig run backend.api.test        # Run a service-level task
-rig run backend.api.test --watch  # Pass args to a task
+rig tasks                           # List all tasks
+rig run backend.build               # Run a group-level task
+rig run backend.api.test            # Run a service-level task
+rig run backend.api.test -- --ci    # Pass args to task via --
+rig run api.test web.test db.test   # Run multiple tasks sequentially
+rig run api.test web.test -p        # Run tasks in parallel
 ```
 
 Services run in tmux sessions - they survive terminal close and can be reattached.
@@ -133,8 +135,9 @@ SERVICES:
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
 
 TASKS:
-  tasks [--group <name>]       List all tasks
-  run/task <path> [args...]    Run a task (group.name or group.service.name)
+  tasks [--group <name>]           List all tasks
+  run/task <task...> [-- args...]  Run task(s) (group.name or group.service.name)
+    -p, --parallel                 Run tasks in parallel
 
 MULTI-FILE:
   discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
@@ -160,12 +163,12 @@ EXAMPLES:
   rig logs -f               Follow all logs
   rig logs --prev api       Show previous logs for api
   rig tasks                 List all tasks
-  rig run backend.deploy    Run a group-level task
-  rig run backend.api.build Run a service-level task
-  rig run backend.api.test --watch  Pass args to a task
+  rig run backend.deploy    Run a task
+  rig run backend.api.test -- --coverage  Pass args to task
+  rig run api.test web.test Run multiple tasks sequentially
+  rig run api.test web.test -p  Run tasks in parallel
   rig config --json         Show raw JSON config
   rig discover              Scan for rig files and update imports
-  rig discover --dry-run    Show what would be imported
 
 CONFIG:
   Searches upward from current directory for rig.yaml, rig.yml, or *.rig.yaml.

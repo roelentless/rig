@@ -586,11 +586,11 @@ Deno.test({
 });
 
 Deno.test({
-  name: `[${PLATFORM}] rig run - passes arguments to command`,
+  name: `[${PLATFORM}] rig run - passes arguments via --`,
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stdout } = await rig(["run", `${TEST_GROUP}.echo-args`, "foo", "bar", "baz"]);
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.echo-args`, "--", "foo", "bar", "baz"]);
       assertEquals(code, 0);
       assertStringIncludes(stdout, "args: foo bar baz");
     } finally {
@@ -621,6 +621,90 @@ Deno.test({
       const { code, stdout } = await rig(["run", "badgroup.cmd"]);
       assertEquals(code, 1);
       assertStringIncludes(stdout, "Unknown group");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - multiple tasks sequential`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.task-b`, `${TEST_GROUP}.task-c`]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "task-a-output");
+      assertStringIncludes(stdout, "task-b-output");
+      assertStringIncludes(stdout, "task-c-output");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - multiple tasks fail-fast`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      // fail-task exits with 3, should stop before task-c
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.fail-task`, `${TEST_GROUP}.task-c`]);
+      assertEquals(code, 3);
+      assertStringIncludes(stdout, "task-a-output");
+      assertStringIncludes(stdout, "fail-task-ran");
+      // task-c should NOT have run due to fail-fast
+      assertEquals(stdout.includes("task-c-output"), false);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - multiple tasks parallel`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", "--parallel", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.task-b`, `${TEST_GROUP}.task-c`]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "task-a-output");
+      assertStringIncludes(stdout, "task-b-output");
+      assertStringIncludes(stdout, "task-c-output");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - parallel continues on failure`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      // fail-task exits with 3, but other tasks should still run in parallel
+      const { code, stdout } = await rig(["run", "-p", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.fail-task`, `${TEST_GROUP}.task-c`]);
+      assertEquals(code, 3);
+      assertStringIncludes(stdout, "task-a-output");
+      assertStringIncludes(stdout, "fail-task-ran");
+      // task-c SHOULD have run (parallel continues on failure)
+      assertStringIncludes(stdout, "task-c-output");
+      // Failure shown immediately
+      assertStringIncludes(stdout, "failed with exit code 3");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] rig run - multiple tasks with args errors`,
+  async fn() {
+    await setupTestConfig();
+    try {
+      const { code, stdout } = await rig(["run", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.task-b`, "--", "some", "args"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stdout, "Cannot pass arguments when running multiple tasks");
     } finally {
       await teardown();
     }

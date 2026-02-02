@@ -52,6 +52,18 @@ groups:
       echo-args:
         command: "sh -c 'echo args: \$*' --"
         working_dir: /tmp
+      task-a:
+        command: echo "task-a-output"
+        working_dir: /tmp
+      task-b:
+        command: echo "task-b-output"
+        working_dir: /tmp
+      task-c:
+        command: echo "task-c-output"
+        working_dir: /tmp
+      fail-task:
+        command: sh -c "echo 'fail-task-ran'; exit 3"
+        working_dir: /tmp
 `;
 
 // Get the repo root (parent of test folder)
