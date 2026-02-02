@@ -2809,7 +2809,7 @@ DESCRIPTION:
           break;
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes("Config file not found")) {
+      if (err instanceof Error && (err.message.includes("Config file not found") || err.message.includes("No rig config found"))) {
         console.error("No config file found. Run 'rig init' to create one.");
         Deno.exit(1);
       }
