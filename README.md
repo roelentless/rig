@@ -36,14 +36,14 @@ Tasks execute directly - they pass through stdin/stdout and exit codes.
 
 **Prerequisites:** tmux and deno
 
-**Optional:** fd (for faster `rig discover` file scanning)
+**Optional:** fd (faster file scanning), watchexec (file watching for auto-restart)
 
 ```bash
 # macOS
-brew install tmux deno fd
+brew install tmux deno fd watchexec
 
 # Linux
-sudo apt install tmux fd-find
+sudo apt install tmux fd-find watchexec
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
@@ -233,6 +233,35 @@ env_file:
 Files are processed in order. Later files override earlier. Inline `environment` values override `env_file` values.
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet
+
+### Watch (auto-restart)
+
+Services can automatically restart when files change using [watchexec](https://github.com/watchexec/watchexec):
+
+```yaml
+groups:
+  backend:
+    services:
+      api:
+        command: deno run -A server.ts
+        working_dir: ./backend
+        watch:
+          paths: ['./src', './config']    # Directories to watch (relative to working_dir)
+          extensions: [ts, tsx, json]     # File extensions to watch
+          patterns: ['**/*.ts']           # Include glob patterns
+          ignore: ['**/test/**']          # Exclude patterns
+          debounce: 500ms                 # Wait before restarting
+```
+
+All options map directly to watchexec flags - no remapping or rig-specific defaults. If `paths` is omitted, watchexec watches the service's `working_dir` by default.
+
+| Option | Type | watchexec flag | Description |
+|--------|------|----------------|-------------|
+| `paths` | string[] | `-w` | Directories/files to watch |
+| `extensions` | string[] | `-e` | File extensions (e.g., `ts`, `tsx`) |
+| `patterns` | string[] | `--filter` | Include glob patterns |
+| `ignore` | string[] | `--ignore` | Exclude glob patterns |
+| `debounce` | string | `--debounce` | Debounce duration (e.g., `500ms`) |
 
 ### Multi-File Config
 

@@ -12,6 +12,9 @@ groups:
         working_dir: .
         env_file: ./api.env
         depends_on: [db]
+        watch:
+          extensions: [ts]
+          ignore: ['*_test.ts']
         tasks:
           test:
             command: deno test -A

@@ -153,3 +153,30 @@ export function stripAnsi(str: string): string {
 export function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+// Check if watchexec is installed
+export async function watchexecInstalled(): Promise<boolean> {
+  try {
+    const cmd = new Deno.Command("which", { args: ["watchexec"] });
+    const { code } = await cmd.output();
+    return code === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Test config with watch
+export const TEST_CONFIG_WITH_WATCH = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      watched-svc:
+        command: sh -c "echo 'started'; sleep 30"
+        working_dir: /tmp
+        watch:
+          paths: ['.']
+          extensions: [txt, md]
+          patterns: ['**/*.log']
+          ignore: ['**/cache/**']
+          debounce: 100ms
+`;

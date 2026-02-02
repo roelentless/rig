@@ -1183,6 +1183,102 @@ groups:
   },
 });
 
+// ============================================================================
+// WATCH TESTS
+// ============================================================================
+
+import { TEST_CONFIG_WITH_WATCH, watchexecInstalled } from "./_helpers.ts";
+
+Deno.test({
+  name: `[${PLATFORM}] watch config - parses watch options correctly`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, TEST_CONFIG_WITH_WATCH);
+
+    try {
+      const { code, stdout } = await rig(["config", "--json"]);
+      assertEquals(code, 0);
+      const config = JSON.parse(stripAnsi(stdout));
+      const watchedSvc = config.groups[TEST_GROUP].services["watched-svc"];
+
+      // Verify watch config is present
+      assertEquals(typeof watchedSvc.watch, "object");
+      assertEquals(watchedSvc.watch.extensions, ["txt", "md"]);
+      assertEquals(watchedSvc.watch.patterns, ["**/*.log"]);
+      assertEquals(watchedSvc.watch.ignore, ["**/cache/**"]);
+      assertEquals(watchedSvc.watch.debounce, "100ms");
+
+      // Verify paths are resolved (relative to working_dir which is /tmp)
+      assertEquals(watchedSvc.watch.paths, ["/tmp"]);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] watch config - paths default to working_dir when not specified`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    // Config with watch but no paths
+    const config = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      minimal-watch:
+        command: echo "test"
+        working_dir: /tmp
+        watch:
+          extensions: [ts]
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    try {
+      const { code, stdout } = await rig(["config", "--json"]);
+      assertEquals(code, 0);
+      const parsed = JSON.parse(stripAnsi(stdout));
+      const svc = parsed.groups[TEST_GROUP].services["minimal-watch"];
+
+      // Watch should exist but paths should be undefined (default applied at runtime)
+      assertEquals(typeof svc.watch, "object");
+      assertEquals(svc.watch.extensions, ["ts"]);
+      assertEquals(svc.watch.paths, undefined);
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] watch service - starts with watchexec wrapper`,
+  ignore: !(await watchexecInstalled()),
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, TEST_CONFIG_WITH_WATCH);
+
+    try {
+      // Start the watched service
+      const { code, stdout } = await rig(["start", "-d", "watched-svc"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started watched-svc");
+
+      // Verify session exists
+      assertEquals(await sessionExists("watched-svc"), true);
+
+      // Verify service is running
+      const { stdout: psOut } = await rig(["ps"]);
+      assertStringIncludes(psOut, "watched-svc");
+      assertStringIncludes(psOut, "running");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
 // Final cleanup
 Deno.test({
   name: `[${PLATFORM}] cleanup`,

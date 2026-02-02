@@ -1,4 +1,4 @@
-/** Mock API server - simulates HTTP request handling for demo purposes */
+/** Mock API server: simulates HTTP request handling for demo purposes */
 
 const PORT = Deno.env.get("PORT") || "3000";
 

@@ -40,9 +40,23 @@
 - Use `@std/cli/parse-args` for flag parsing
 - Don't use `stopEarly: true` if flags can appear after the command
 
+### Watch (auto-restart)
+
+- Watch wraps service commands with watchexec for file-triggered restarts
+- Paths in `watch.paths` resolve relative to `working_dir` (same as other path fields)
+- Glob patterns need shell quoting (`shellQuote()`) to prevent shell expansion
+- Full delegation to watchexec - no rig-specific defaults or remapping
+- Check watchexec installed before starting service (`requireWatchexec()`)
+
+### Config Display
+
+- Simple text output (`rig config`) skips complex nested fields (`tasks`, `watch`) to avoid `[object Object]` serialization
+- JSON output (`rig config --json`) includes full details
+- Use `skip` Set to control which fields appear in text output
+
 ### Multi-File Config
 
-- Path normalization is critical - use a `normalizePath()` function to resolve `..` and `.` in paths
+- Path normalization uses URL class: `new URL(path, "file:///").pathname` - cleaner than manual string manipulation
 - Circular import detection needs normalized absolute paths to work correctly
 - When using `fd` for file discovery, respect .gitignore to avoid pulling in rig files from dependencies
 - Deduplication must happen by absolute normalized path, not relative path
@@ -175,7 +189,6 @@ Tests automatically detect the platform via `Deno.build.os` and prefix test name
 
 ## Future Considerations
 
-- Auto-restart: tmux has `respawn-pane` but adds complexity
 - Group-level settings (shared env, working_dir defaults)
 - Import globs: `imports: ["services/*/rig.yaml"]`
 - `rig discover --watch` for continuous import updates

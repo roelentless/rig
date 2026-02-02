@@ -29,6 +29,14 @@ interface EnvFileEntry {
   required?: boolean;  // defaults to true
 }
 
+interface WatchDef {
+  paths?: string[];       // Directories/files to watch (relative to working_dir)
+  extensions?: string[];  // File extensions (e.g., ["ts", "tsx"])
+  patterns?: string[];    // Include glob patterns (watchexec --filter)
+  ignore?: string[];      // Exclude glob patterns (watchexec --ignore)
+  debounce?: string;      // Debounce duration (e.g., "500ms")
+}
+
 interface TaskDef {
   command: string;
   working_dir?: string;                    // Required for group tasks, inherited for service tasks
@@ -46,6 +54,7 @@ interface ServiceDef {
   depends_on?: string[];
   healthcheck?: HealthCheck;
   tasks?: Record<string, TaskDef>;         // Service-level tasks
+  watch?: WatchDef;                        // Auto-restart via watchexec
 }
 
 interface GroupDef {
@@ -228,6 +237,64 @@ function buildEnvString(env: Record<string, string>): string {
     .join(" ");
 }
 
+/**
+ * Quote a string for shell if it contains special characters.
+ */
+function shellQuote(s: string): string {
+  // If string contains shell special chars, wrap in single quotes
+  // and escape any single quotes within
+  if (/[*?[\]{}$`"'\\!<>|;&() \t\n]/.test(s)) {
+    return `'${s.replace(/'/g, "'\\''")}'`;
+  }
+  return s;
+}
+
+/**
+ * Build watchexec command wrapper for a service with watch config.
+ * Returns the wrapped command string.
+ */
+function buildWatchexecCommand(command: string, watch: WatchDef, workingDir: string): string {
+  const args: string[] = [];
+
+  // -w for each path (default to working_dir if no paths specified)
+  const paths = watch.paths?.length ? watch.paths : [workingDir];
+  for (const p of paths) {
+    args.push("-w", shellQuote(p));
+  }
+
+  // -e extensions (comma-separated)
+  if (watch.extensions?.length) {
+    args.push("-e", watch.extensions.join(","));
+  }
+
+  // --filter patterns (need quoting to prevent shell glob expansion)
+  if (watch.patterns?.length) {
+    for (const pattern of watch.patterns) {
+      args.push("--filter", shellQuote(pattern));
+    }
+  }
+
+  // --ignore patterns (need quoting to prevent shell glob expansion)
+  if (watch.ignore?.length) {
+    for (const pattern of watch.ignore) {
+      args.push("--ignore", shellQuote(pattern));
+    }
+  }
+
+  // --debounce
+  if (watch.debounce) {
+    args.push("--debounce", watch.debounce);
+  }
+
+  // Always use --restart to kill and restart on changes
+  args.push("--restart");
+
+  // Add command separator and the actual command
+  args.push("--", command);
+
+  return `watchexec ${args.join(" ")}`;
+}
+
 async function loadEnvFiles(
   entries: EnvFileEntry[],
   configDir: string
@@ -282,25 +349,14 @@ function stripControlCodes(line: string): string {
 
 /**
  * Normalize a path by resolving . and .. components.
+ * Uses URL to handle path normalization.
  */
 function normalizePath(path: string): string {
-  const parts = path.split("/");
-  const result: string[] = [];
-
-  for (const part of parts) {
-    if (part === "..") {
-      if (result.length > 0 && result[result.length - 1] !== "..") {
-        result.pop();
-      } else if (!path.startsWith("/")) {
-        result.push(part);
-      }
-    } else if (part !== "." && part !== "") {
-      result.push(part);
-    }
-  }
-
-  const normalized = result.join("/");
-  return path.startsWith("/") ? "/" + normalized : normalized;
+  const normalized = new URL(path, "file:///").pathname;
+  // Remove trailing slash (except for root "/")
+  return normalized.length > 1 && normalized.endsWith("/")
+    ? normalized.slice(0, -1)
+    : normalized;
 }
 
 async function ensureGitignore(configDir: string): Promise<void> {
@@ -716,6 +772,41 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
             }
           }
 
+          // Parse watch config
+          let watch: WatchDef | undefined;
+          if (d.watch && typeof d.watch === "object") {
+            const w = d.watch as Record<string, unknown>;
+            watch = {};
+
+            // Parse paths - resolve relative to working_dir (already absolute)
+            if (w.paths && Array.isArray(w.paths)) {
+              watch.paths = (w.paths as string[]).map(p => {
+                if (p.startsWith("/")) return normalizePath(p);
+                return normalizePath(`${working_dir}/${p}`);
+              });
+            }
+
+            // Parse extensions
+            if (w.extensions && Array.isArray(w.extensions)) {
+              watch.extensions = w.extensions as string[];
+            }
+
+            // Parse patterns (include filters)
+            if (w.patterns && Array.isArray(w.patterns)) {
+              watch.patterns = w.patterns as string[];
+            }
+
+            // Parse ignore patterns
+            if (w.ignore && Array.isArray(w.ignore)) {
+              watch.ignore = w.ignore as string[];
+            }
+
+            // Parse debounce
+            if (w.debounce !== undefined) {
+              watch.debounce = String(w.debounce);
+            }
+          }
+
           services[name] = {
             command: d.command as string,
             working_dir,
@@ -724,6 +815,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
             depends_on,
             healthcheck,
             tasks: serviceTasks,
+            watch,
           };
 
           seenServices.set(name, groupName);
@@ -1148,9 +1240,21 @@ class SessionManager {
       await this.stop(service);
     }
 
+    // Check for watchexec if watch is configured
+    if (def.watch) {
+      await requireWatchexec();
+    }
+
+    // Build command - wrap with watchexec if watch is configured
+    let finalCommand = def.command;
+    if (def.watch) {
+      finalCommand = buildWatchexecCommand(def.command, def.watch, def.working_dir);
+      logVerbose(`Wrapped command with watchexec: ${finalCommand}`);
+    }
+
     // Build command with environment vars
     const envStr = def.environment ? buildEnvString(def.environment) + " " : "";
-    const cmd = `${envStr}exec ${def.command}`;
+    const cmd = `${envStr}exec ${finalCommand}`;
 
     // Create tmux session
     const tmux = new Deno.Command("tmux", {
@@ -2186,7 +2290,7 @@ function cmdConfig(
     return;
   }
 
-  const skip = new Set(["command", "color"]);
+  const skip = new Set(["command", "color", "tasks", "watch"]);
   const cwd = Deno.cwd();
 
   for (const target of targets) {
@@ -2226,6 +2330,31 @@ async function commandExists(cmd: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Check if watchexec is installed, exit with helpful message if not.
+ */
+async function requireWatchexec(): Promise<void> {
+  if (await commandExists("watchexec")) {
+    return;
+  }
+
+  print(`
+${c("red")}Error: watchexec is not installed${c("reset")}
+
+Services with 'watch' configuration require watchexec for file watching.
+
+Install watchexec:
+
+  macOS:         brew install watchexec
+  Ubuntu/Debian: sudo apt install watchexec
+  Arch:          sudo pacman -S watchexec
+  Cargo:         cargo install watchexec-cli
+
+After installing, run this command again.
+`);
+  Deno.exit(1);
 }
 
 /**
