@@ -1,0 +1,28 @@
+# Infrastructure/tooling services
+# This demonstrates the *.rig.yaml naming pattern for organizing
+# configs by concern without creating subdirectories.
+
+groups:
+  infra:
+    services:
+      mailhog:
+        command: sh -c "echo '[mailhog] SMTP on 1025, UI on 8025'; while true; do sleep 10; done"
+        working_dir: .
+        environment:
+          SMTP_PORT: "1025"
+          UI_PORT: "8025"
+
+      localstack:
+        command: sh -c "echo '[localstack] Starting AWS mocks...'; sleep 2; echo '[localstack] Ready on port 4566'; while true; do sleep 10; done"
+        working_dir: .
+        environment:
+          SERVICES: "s3,sqs,dynamodb"
+          EDGE_PORT: "4566"
+        healthcheck:
+          grace_ms: 1000
+
+    tasks:
+      aws-setup:
+        command: echo "Setting up local AWS resources..."
+        working_dir: .
+        description: Initialize localstack buckets and queues

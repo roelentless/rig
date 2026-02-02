@@ -36,12 +36,14 @@ Tasks execute directly - they pass through stdin/stdout and exit codes.
 
 **Prerequisites:** tmux and deno
 
+**Optional:** fd (for faster `rig discover` file scanning)
+
 ```bash
 # macOS
-brew install tmux deno
+brew install tmux deno fd
 
 # Linux
-sudo apt install tmux
+sudo apt install tmux fd-find
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
@@ -93,7 +95,7 @@ groups:
         working_dir: ./frontend
 ```
 
-See the [example/](example/) folder for a working configuration.
+See the [example/](example/) folder for a single-file configuration, and [example-monorepo/](example-monorepo/) for a multi-file setup.
 
 ## Commands
 
@@ -118,6 +120,9 @@ SERVICES:
 TASKS:
   tasks [--group <name>]       List all tasks
   run/task <path> [args...]    Run a task (group.name or group.service.name)
+
+MULTI-FILE:
+  discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
 
 OTHER:
   version                   Show version
@@ -144,9 +149,12 @@ EXAMPLES:
   rig run backend.api.build Run a service-level task
   rig run backend.api.test --watch  Pass args to a task
   rig config --json         Show raw JSON config
+  rig discover              Scan for rig files and update imports
+  rig discover --dry-run    Show what would be imported
 
 CONFIG:
-  Looks for rig.yaml or rig.yml in current directory.
+  Searches upward from current directory for rig.yaml, rig.yml, or *.rig.yaml.
+  Supports imports to compose configs from multiple files.
 ```
 
 ## Config reference
@@ -225,6 +233,48 @@ env_file:
 Files are processed in order. Later files override earlier. Inline `environment` values override `env_file` values.
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet
+
+### Multi-File Config
+
+For monorepos or larger projects, configs can import other configs:
+
+```yaml
+# monorepo/rig.yaml
+imports:
+  - shared/db/rig.yaml
+  - backend/rig.yaml
+  - frontend/rig.yaml
+  - infra.rig.yaml          # *.rig.yaml naming supported
+
+groups:
+  # ... local groups
+```
+
+Key behaviors:
+- **Upward search**: `rig` searches upward from CWD to find the nearest config
+- **Path expansion**: Each file's paths (`working_dir`, `env_file`) are relative to its own location
+- **Flat merge**: All imported groups merge into a single namespace
+- **Deduplication**: Same file imported by multiple configs is loaded once
+- **Validation**: Duplicate group/service names and circular imports are errors
+
+**Discovery**: Use `rig discover` to scan for rig files and update imports:
+
+```bash
+rig discover              # Interactive - prompt before changes
+rig discover --dry-run    # Show what would be imported
+rig discover --yes        # Auto-accept changes
+```
+
+**Running from subdirectories**: When you run `rig` from a subdirectory, it finds the nearest config and uses that context:
+
+```bash
+cd monorepo/backend       # Has its own rig.yaml importing shared/db
+rig ps                    # Shows backend + database services only
+cd monorepo               # Root rig.yaml imports everything
+rig ps                    # Shows ALL services
+```
+
+See [example-monorepo/](example-monorepo/) for a complete multi-file setup.
 
 ## Log files
 

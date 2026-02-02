@@ -57,6 +57,20 @@ interface Config {
   groups: Record<string, GroupDef>;
 }
 
+// Raw config as parsed from YAML (before processing)
+interface RawConfig {
+  imports?: string[];
+  groups?: Record<string, unknown>;
+}
+
+// Context for recursive config loading
+interface LoadContext {
+  configPath: string;      // absolute path to this rig file
+  configDir: string;       // dirname (execution context for this file)
+  loaded: Set<string>;     // already-imported files (dedup by absolute path)
+  importChain: string[];   // for circular import detection
+}
+
 // Resolved task with merged config from hierarchy
 interface ResolvedTask {
   path: string;           // e.g., "backend.api.build" or "backend.deploy"
@@ -138,6 +152,7 @@ const SERVICE_COLORS = [
 ];
 
 const CONFIG_NAMES = ["rig.yaml", "rig.yml"];
+const CONFIG_PATTERN = /^(rig\.ya?ml|.*\.rig\.yaml)$/;  // matches rig.yaml, rig.yml, *.rig.yaml
 const LOG_DIR = ".rig/logs";
 
 // Disable colors when not a TTY (piping to other commands)
@@ -263,6 +278,29 @@ function stripControlCodes(line: string): string {
     .replace(/\x1b\[\d*G/g, "")             // Cursor to column
     .replace(/\x1b\[\d*[JK]/g, "")          // Clear screen/line
     .replace(/\x1b\[\?25[lh]/g, "");        // Hide/show cursor
+}
+
+/**
+ * Normalize a path by resolving . and .. components.
+ */
+function normalizePath(path: string): string {
+  const parts = path.split("/");
+  const result: string[] = [];
+
+  for (const part of parts) {
+    if (part === "..") {
+      if (result.length > 0 && result[result.length - 1] !== "..") {
+        result.pop();
+      } else if (!path.startsWith("/")) {
+        result.push(part);
+      }
+    } else if (part !== "." && part !== "") {
+      result.push(part);
+    }
+  }
+
+  const normalized = result.join("/");
+  return path.startsWith("/") ? "/" + normalized : normalized;
 }
 
 async function ensureGitignore(configDir: string): Promise<void> {
@@ -415,6 +453,51 @@ After installing, run this command again.
 // CONFIG
 // ============================================================================
 
+/**
+ * Walk upward from startDir to find the nearest rig config file.
+ * Checks for rig.yaml, rig.yml first, then *.rig.yaml files.
+ * Returns absolute path to the config file.
+ */
+async function findNearestConfig(startDir: string): Promise<string> {
+  // Resolve to absolute path
+  let dir = startDir.startsWith("/") ? startDir : await Deno.realPath(startDir);
+
+  while (true) {
+    // Check for standard names first (rig.yaml, rig.yml)
+    for (const name of CONFIG_NAMES) {
+      const path = `${dir}/${name}`;
+      try {
+        await Deno.stat(path);
+        return path;
+      } catch {
+        // Continue
+      }
+    }
+
+    // Check for *.rig.yaml files
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.isFile && entry.name.endsWith(".rig.yaml") && entry.name !== "rig.yaml") {
+          return `${dir}/${entry.name}`;
+        }
+      }
+    } catch {
+      // Directory not readable, continue to parent
+    }
+
+    // Move to parent directory
+    const parent = dir.replace(/\/[^/]+$/, "") || "/";
+    if (parent === dir) {
+      // Reached filesystem root
+      throw new Error("No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml");
+    }
+    dir = parent;
+  }
+}
+
+/**
+ * Legacy function for backward compatibility - finds config in current directory only.
+ */
 async function findConfig(): Promise<string> {
   for (const name of CONFIG_NAMES) {
     try {
@@ -427,169 +510,274 @@ async function findConfig(): Promise<string> {
   throw new Error(`Config file not found. Expected: ${CONFIG_NAMES.join(" or ")}`);
 }
 
-async function loadConfig(configPath?: string): Promise<{ config: Config; configDir: string }> {
-  const path = configPath ?? (await findConfig());
+/**
+ * Normalize a path for env_file entries, resolving relative to configDir.
+ */
+function normalizeEnvFilePath(envFile: string, configDir: string): string {
+  if (envFile.startsWith("/")) {
+    return envFile;
+  }
+  return `${configDir}/${envFile}`;
+}
 
+/**
+ * Parse a single rig config file and expand paths relative to its directory.
+ * Does not process imports - returns raw parsed content with expanded paths.
+ */
+async function parseConfigFile(configPath: string): Promise<{ raw: RawConfig; configDir: string }> {
   let content: string;
   try {
-    content = await Deno.readTextFile(path);
+    content = await Deno.readTextFile(configPath);
   } catch (err) {
-    throw new Error(`Failed to read config file '${path}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Failed to read config file '${configPath}': ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  let raw: Record<string, unknown>;
+  let raw: RawConfig;
   try {
-    raw = parseYaml(content) as Record<string, unknown>;
+    raw = parseYaml(content) as RawConfig;
   } catch (err) {
-    throw new Error(`Invalid YAML in ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Invalid YAML in ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  if (!raw.groups || typeof raw.groups !== "object") {
-    throw new Error("Config must have a 'groups' field (object)");
+  // Handle empty file or null content
+  if (!raw) {
+    raw = {};
   }
 
-  const configDir = Deno.cwd();
+  const configDir = configPath.replace(/\/[^/]+$/, "");
+  return { raw, configDir };
+}
+
+/**
+ * Recursively load a config tree, processing imports and merging groups.
+ * Each file's paths are expanded relative to its own location before merging.
+ */
+async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<string, GroupDef>; seenServices: Map<string, string> }> {
+  const { configPath, configDir, loaded, importChain } = ctx;
+
+  // Circular import check
+  if (importChain.includes(configPath)) {
+    const cycle = [...importChain, configPath].map(p => p.replace(Deno.cwd() + "/", "./")).join("\n  → ");
+    throw new Error(`Circular import detected:\n  ${cycle}`);
+  }
+
+  // Dedup check - already loaded this exact file
+  if (loaded.has(configPath)) {
+    return { groups: {}, seenServices: new Map() };
+  }
+  loaded.add(configPath);
+
+  // Parse the file
+  const { raw } = await parseConfigFile(configPath);
+
+  // Track groups and services from this file
   const groups: Record<string, GroupDef> = {};
-  const seenServices = new Map<string, string>(); // serviceName -> groupName (for duplicate detection)
+  const seenServices = new Map<string, string>(); // serviceName -> groupName
 
-  for (const [groupName, groupDef] of Object.entries(raw.groups as Record<string, unknown>)) {
-    // Validate group name (alphanumeric, hyphen, underscore)
-    if (!/^[a-zA-Z0-9_-]+$/.test(groupName)) {
-      throw new Error(`Invalid group name '${groupName}': must be alphanumeric with hyphens/underscores only`);
-    }
-
-    const g = groupDef as Record<string, unknown>;
-
-    // Groups can have services, tasks, or both
-    if (!g.services && !g.tasks) {
-      throw new Error(`Group '${groupName}' must have 'services' and/or 'tasks'`);
-    }
-
-    const services: Record<string, ServiceDef> = {};
-    const groupTasks: Record<string, TaskDef> = {};
-
-    // Parse services (if present)
-    if (g.services && typeof g.services === "object") {
-    for (const [name, def] of Object.entries(g.services as Record<string, unknown>)) {
-      // Check for duplicate service names across groups
-      if (seenServices.has(name)) {
-        throw new Error(`Duplicate service name '${name}' found in groups '${seenServices.get(name)}' and '${groupName}'`);
-      }
-      seenServices.set(name, groupName);
-
-      const d = def as Record<string, unknown>;
-      if (!d.command || typeof d.command !== "string") {
-        throw new Error(`Service '${groupName}.${name}' must have a 'command' field`);
-      }
-      if (!d.working_dir || typeof d.working_dir !== "string") {
-        throw new Error(`Service '${groupName}.${name}' must have a 'working_dir' field`);
+  // Process groups from this file
+  if (raw.groups && typeof raw.groups === "object") {
+    for (const [groupName, groupDef] of Object.entries(raw.groups as Record<string, unknown>)) {
+      // Validate group name
+      if (!/^[a-zA-Z0-9_-]+$/.test(groupName)) {
+        throw new Error(`Invalid group name '${groupName}' in ${configPath}: must be alphanumeric with hyphens/underscores only`);
       }
 
-      // Resolve relative working_dir paths
-      let working_dir = d.working_dir as string;
-      if (!working_dir.startsWith("/")) {
-        working_dir = `${configDir}/${working_dir}`;
+      const g = groupDef as Record<string, unknown>;
+
+      // Groups can have services, tasks, or both
+      if (!g.services && !g.tasks) {
+        throw new Error(`Group '${groupName}' in ${configPath} must have 'services' and/or 'tasks'`);
       }
 
-      // Convert all environment values to strings for noob-friendliness
-      const environment = d.environment
-        ? Object.fromEntries(
-            Object.entries(d.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
-          )
-        : undefined;
+      const services: Record<string, ServiceDef> = {};
+      const groupTasks: Record<string, TaskDef> = {};
 
-      // Parse depends_on
-      let depends_on: string[] | undefined;
-      if (d.depends_on) {
-        if (!Array.isArray(d.depends_on)) {
-          throw new Error(`Service '${groupName}.${name}' depends_on must be an array`);
-        }
-        depends_on = d.depends_on as string[];
-      }
+      // Parse services
+      if (g.services && typeof g.services === "object") {
+        for (const [name, def] of Object.entries(g.services as Record<string, unknown>)) {
+          const d = def as Record<string, unknown>;
+          if (!d.command || typeof d.command !== "string") {
+            throw new Error(`Service '${groupName}.${name}' in ${configPath} must have a 'command' field`);
+          }
+          if (!d.working_dir || typeof d.working_dir !== "string") {
+            throw new Error(`Service '${groupName}.${name}' in ${configPath} must have a 'working_dir' field`);
+          }
 
-      // Parse healthcheck
-      let healthcheck: HealthCheck | undefined;
-      if (d.healthcheck) {
-        const hc = d.healthcheck as Record<string, unknown>;
-        healthcheck = {};
-        if (hc.grace_ms !== undefined) {
-          healthcheck.grace_ms = Number(hc.grace_ms);
-        }
-      }
+          // Resolve relative working_dir paths relative to this config's directory
+          let working_dir = d.working_dir as string;
+          if (!working_dir.startsWith("/")) {
+            working_dir = `${configDir}/${working_dir}`;
+          }
 
-      // Parse env_file and merge with inline environment
-      let envFileEntries: EnvFileEntry[] = [];
-      if (d.env_file) {
-        if (typeof d.env_file === "string") {
-          envFileEntries = [{ path: d.env_file, required: true }];
-        } else if (Array.isArray(d.env_file)) {
-          envFileEntries = (d.env_file as unknown[]).map((entry) => {
-            if (typeof entry === "string") {
-              return { path: entry, required: true };
+          // Convert all environment values to strings
+          const environment = d.environment
+            ? Object.fromEntries(
+                Object.entries(d.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+              )
+            : undefined;
+
+          // Parse depends_on
+          let depends_on: string[] | undefined;
+          if (d.depends_on) {
+            if (!Array.isArray(d.depends_on)) {
+              throw new Error(`Service '${groupName}.${name}' in ${configPath} depends_on must be an array`);
             }
-            const e = entry as Record<string, unknown>;
-            return {
-              path: e.path as string,
-              required: e.required !== false,  // default true
-            };
-          });
-        }
-      }
-
-      // Load env files and merge (inline environment overrides env_file)
-      let mergedEnvironment = environment;
-      if (envFileEntries.length > 0) {
-        const envFromFiles = await loadEnvFiles(envFileEntries, configDir);
-        mergedEnvironment = { ...envFromFiles, ...environment };
-      }
-
-      // Parse service-level tasks
-      let serviceTasks: Record<string, TaskDef> | undefined;
-      if (d.tasks && typeof d.tasks === "object") {
-        serviceTasks = {};
-        for (const [taskName, taskDef] of Object.entries(d.tasks as Record<string, unknown>)) {
-          const r = taskDef as Record<string, unknown>;
-          if (!r.command || typeof r.command !== "string") {
-            throw new Error(`Task '${groupName}.${name}.${taskName}' must have a 'command' field`);
+            depends_on = d.depends_on as string[];
           }
 
-          // Resolve working_dir if specified (otherwise inherited from service at resolve time)
-          let taskWorkingDir = r.working_dir as string | undefined;
-          if (taskWorkingDir && !taskWorkingDir.startsWith("/")) {
-            taskWorkingDir = `${configDir}/${taskWorkingDir}`;
+          // Parse healthcheck
+          let healthcheck: HealthCheck | undefined;
+          if (d.healthcheck) {
+            const hc = d.healthcheck as Record<string, unknown>;
+            healthcheck = {};
+            if (hc.grace_ms !== undefined) {
+              healthcheck.grace_ms = Number(hc.grace_ms);
+            }
           }
 
-          // Parse env_file for service task
-          let taskEnvFileEntries: EnvFileEntry[] = [];
-          if (r.env_file) {
-            if (typeof r.env_file === "string") {
-              taskEnvFileEntries = [{ path: r.env_file, required: true }];
-            } else if (Array.isArray(r.env_file)) {
-              taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
+          // Parse env_file - normalize paths relative to this config's directory
+          let envFileEntries: EnvFileEntry[] = [];
+          if (d.env_file) {
+            if (typeof d.env_file === "string") {
+              envFileEntries = [{ path: normalizeEnvFilePath(d.env_file, configDir), required: true }];
+            } else if (Array.isArray(d.env_file)) {
+              envFileEntries = (d.env_file as unknown[]).map((entry) => {
                 if (typeof entry === "string") {
-                  return { path: entry, required: true };
+                  return { path: normalizeEnvFilePath(entry, configDir), required: true };
                 }
                 const e = entry as Record<string, unknown>;
                 return {
-                  path: e.path as string,
+                  path: normalizeEnvFilePath(e.path as string, configDir),
                   required: e.required !== false,
                 };
               });
             }
           }
 
-          // Load env files for service task
+          // Load env files and merge (inline environment overrides env_file)
+          let mergedEnvironment = environment;
+          if (envFileEntries.length > 0) {
+            const envFromFiles = await loadEnvFiles(envFileEntries, "/"); // paths already absolute
+            mergedEnvironment = { ...envFromFiles, ...environment };
+          }
+
+          // Parse service-level tasks
+          let serviceTasks: Record<string, TaskDef> | undefined;
+          if (d.tasks && typeof d.tasks === "object") {
+            serviceTasks = {};
+            for (const [taskName, taskDef] of Object.entries(d.tasks as Record<string, unknown>)) {
+              const r = taskDef as Record<string, unknown>;
+              if (!r.command || typeof r.command !== "string") {
+                throw new Error(`Task '${groupName}.${name}.${taskName}' in ${configPath} must have a 'command' field`);
+              }
+
+              // Resolve working_dir if specified
+              let taskWorkingDir = r.working_dir as string | undefined;
+              if (taskWorkingDir && !taskWorkingDir.startsWith("/")) {
+                taskWorkingDir = `${configDir}/${taskWorkingDir}`;
+              }
+
+              // Parse env_file for service task
+              let taskEnvFileEntries: EnvFileEntry[] = [];
+              if (r.env_file) {
+                if (typeof r.env_file === "string") {
+                  taskEnvFileEntries = [{ path: normalizeEnvFilePath(r.env_file, configDir), required: true }];
+                } else if (Array.isArray(r.env_file)) {
+                  taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
+                    if (typeof entry === "string") {
+                      return { path: normalizeEnvFilePath(entry, configDir), required: true };
+                    }
+                    const e = entry as Record<string, unknown>;
+                    return {
+                      path: normalizeEnvFilePath(e.path as string, configDir),
+                      required: e.required !== false,
+                    };
+                  });
+                }
+              }
+
+              // Load env files for service task
+              let taskEnvironment = r.environment
+                ? Object.fromEntries(
+                    Object.entries(r.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+                  )
+                : undefined;
+              if (taskEnvFileEntries.length > 0) {
+                const envFromFiles = await loadEnvFiles(taskEnvFileEntries, "/");
+                taskEnvironment = { ...envFromFiles, ...taskEnvironment };
+              }
+
+              serviceTasks[taskName] = {
+                command: r.command as string,
+                working_dir: taskWorkingDir,
+                environment: taskEnvironment,
+                description: r.description as string | undefined,
+              };
+            }
+          }
+
+          services[name] = {
+            command: d.command as string,
+            working_dir,
+            environment: mergedEnvironment,
+            color: d.color as string | undefined,
+            depends_on,
+            healthcheck,
+            tasks: serviceTasks,
+          };
+
+          seenServices.set(name, groupName);
+        }
+      }
+
+      // Parse group-level tasks
+      if (g.tasks && typeof g.tasks === "object") {
+        for (const [taskName, taskDef] of Object.entries(g.tasks as Record<string, unknown>)) {
+          const r = taskDef as Record<string, unknown>;
+          if (!r.command || typeof r.command !== "string") {
+            throw new Error(`Task '${groupName}.${taskName}' in ${configPath} must have a 'command' field`);
+          }
+          if (!r.working_dir || typeof r.working_dir !== "string") {
+            throw new Error(`Task '${groupName}.${taskName}' in ${configPath} must have a 'working_dir' field (group-level tasks cannot inherit)`);
+          }
+
+          // Resolve relative working_dir
+          let taskWorkingDir = r.working_dir as string;
+          if (!taskWorkingDir.startsWith("/")) {
+            taskWorkingDir = `${configDir}/${taskWorkingDir}`;
+          }
+
+          // Parse env_file for group task
+          let taskEnvFileEntries: EnvFileEntry[] = [];
+          if (r.env_file) {
+            if (typeof r.env_file === "string") {
+              taskEnvFileEntries = [{ path: normalizeEnvFilePath(r.env_file, configDir), required: true }];
+            } else if (Array.isArray(r.env_file)) {
+              taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
+                if (typeof entry === "string") {
+                  return { path: normalizeEnvFilePath(entry, configDir), required: true };
+                }
+                const e = entry as Record<string, unknown>;
+                return {
+                  path: normalizeEnvFilePath(e.path as string, configDir),
+                  required: e.required !== false,
+                };
+              });
+            }
+          }
+
+          // Load env files for group task
           let taskEnvironment = r.environment
             ? Object.fromEntries(
                 Object.entries(r.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
               )
             : undefined;
           if (taskEnvFileEntries.length > 0) {
-            const envFromFiles = await loadEnvFiles(taskEnvFileEntries, configDir);
+            const envFromFiles = await loadEnvFiles(taskEnvFileEntries, "/");
             taskEnvironment = { ...envFromFiles, ...taskEnvironment };
           }
 
-          serviceTasks[taskName] = {
+          groupTasks[taskName] = {
             command: r.command as string,
             working_dir: taskWorkingDir,
             environment: taskEnvironment,
@@ -598,86 +786,88 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
         }
       }
 
-      services[name] = {
-        command: d.command as string,
-        working_dir,
-        environment: mergedEnvironment,
-        color: d.color as string | undefined,
-        depends_on,
-        healthcheck,
-        tasks: serviceTasks,
+      groups[groupName] = {
+        services: Object.keys(services).length > 0 ? services : undefined,
+        tasks: Object.keys(groupTasks).length > 0 ? groupTasks : undefined,
       };
     }
-    } // end if (g.services)
-
-    // Parse group-level tasks
-    if (g.tasks && typeof g.tasks === "object") {
-      for (const [taskName, taskDef] of Object.entries(g.tasks as Record<string, unknown>)) {
-        const r = taskDef as Record<string, unknown>;
-        if (!r.command || typeof r.command !== "string") {
-          throw new Error(`Task '${groupName}.${taskName}' must have a 'command' field`);
-        }
-        if (!r.working_dir || typeof r.working_dir !== "string") {
-          throw new Error(`Task '${groupName}.${taskName}' must have a 'working_dir' field (group-level tasks cannot inherit)`);
-        }
-
-        // Resolve relative working_dir
-        let taskWorkingDir = r.working_dir as string;
-        if (!taskWorkingDir.startsWith("/")) {
-          taskWorkingDir = `${configDir}/${taskWorkingDir}`;
-        }
-
-        // Parse env_file for group task
-        let taskEnvFileEntries: EnvFileEntry[] = [];
-        if (r.env_file) {
-          if (typeof r.env_file === "string") {
-            taskEnvFileEntries = [{ path: r.env_file, required: true }];
-          } else if (Array.isArray(r.env_file)) {
-            taskEnvFileEntries = (r.env_file as unknown[]).map((entry) => {
-              if (typeof entry === "string") {
-                return { path: entry, required: true };
-              }
-              const e = entry as Record<string, unknown>;
-              return {
-                path: e.path as string,
-                required: e.required !== false,
-              };
-            });
-          }
-        }
-
-        // Load env files for group task
-        let taskEnvironment = r.environment
-          ? Object.fromEntries(
-              Object.entries(r.environment as Record<string, unknown>).map(([k, v]) => [k, String(v)])
-            )
-          : undefined;
-        if (taskEnvFileEntries.length > 0) {
-          const envFromFiles = await loadEnvFiles(taskEnvFileEntries, configDir);
-          taskEnvironment = { ...envFromFiles, ...taskEnvironment };
-        }
-
-        groupTasks[taskName] = {
-          command: r.command as string,
-          working_dir: taskWorkingDir,
-          environment: taskEnvironment,
-          description: r.description as string | undefined,
-        };
-      }
-    }
-
-    groups[groupName] = {
-      services: Object.keys(services).length > 0 ? services : undefined,
-      tasks: Object.keys(groupTasks).length > 0 ? groupTasks : undefined,
-    };
   }
 
-  // Validate depends_on references exist
-  for (const [groupName, groupDef] of Object.entries(groups)) {
+  // Process imports recursively
+  if (raw.imports && Array.isArray(raw.imports)) {
+    for (const importPath of raw.imports) {
+      // Resolve import path relative to this config's directory and normalize
+      let absImportPath = importPath.startsWith("/")
+        ? importPath
+        : `${configDir}/${importPath}`;
+
+      // Normalize path (resolve .. and .)
+      absImportPath = normalizePath(absImportPath);
+
+      // Check if import exists
+      try {
+        await Deno.stat(absImportPath);
+      } catch {
+        throw new Error(`Import not found: ${importPath}\n  in ${configPath}`);
+      }
+
+      const childCtx: LoadContext = {
+        configPath: absImportPath,
+        configDir: absImportPath.replace(/\/[^/]+$/, ""),
+        loaded,                                    // shared dedup set
+        importChain: [...importChain, configPath], // track for circular detection
+      };
+
+      const childResult = await loadConfigRecursive(childCtx);
+
+      // Merge child groups into current groups, checking for duplicates
+      for (const [groupName, groupDef] of Object.entries(childResult.groups)) {
+        if (groups[groupName]) {
+          throw new Error(`Duplicate group '${groupName}' defined in:\n  - ${configPath}\n  - ${absImportPath}`);
+        }
+        groups[groupName] = groupDef;
+      }
+
+      // Merge child services, checking for duplicates
+      for (const [serviceName, groupName] of childResult.seenServices) {
+        if (seenServices.has(serviceName)) {
+          throw new Error(
+            `Duplicate service '${serviceName}' found in:\n` +
+            `  - group '${seenServices.get(serviceName)}'\n` +
+            `  - group '${groupName}' in ${absImportPath}`
+          );
+        }
+        seenServices.set(serviceName, groupName);
+      }
+    }
+  }
+
+  return { groups, seenServices };
+}
+
+/**
+ * Load the full config tree starting from a root config file.
+ */
+async function loadConfigTree(rootPath: string): Promise<{ config: Config; configDir: string }> {
+  // Normalize to absolute path
+  const absPath = rootPath.startsWith("/") ? rootPath : `${Deno.cwd()}/${rootPath}`;
+  const configDir = absPath.replace(/\/[^/]+$/, "");
+
+  const ctx: LoadContext = {
+    configPath: absPath,
+    configDir,
+    loaded: new Set(),
+    importChain: [],
+  };
+
+  const result = await loadConfigRecursive(ctx);
+
+  // Validate depends_on references exist across all groups
+  for (const [groupName, groupDef] of Object.entries(result.groups)) {
     if (!groupDef.services) continue;
     for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
       for (const dep of serviceDef.depends_on ?? []) {
-        if (!seenServices.has(dep)) {
+        if (!result.seenServices.has(dep)) {
           throw new Error(`Service '${groupName}.${serviceName}' depends on unknown service '${dep}'`);
         }
       }
@@ -685,9 +875,18 @@ async function loadConfig(configPath?: string): Promise<{ config: Config; config
   }
 
   return {
-    config: { groups },
+    config: { groups: result.groups },
     configDir,
   };
+}
+
+/**
+ * Load config from a path (uses tree-based loading with import support).
+ * If no path is provided, searches upward from CWD for nearest config.
+ */
+async function loadConfig(configPath?: string): Promise<{ config: Config; configDir: string }> {
+  const path = configPath ?? (await findNearestConfig(Deno.cwd()));
+  return loadConfigTree(path);
 }
 
 /**
@@ -2013,6 +2212,203 @@ function cmdConfig(
 }
 
 // ============================================================================
+// DISCOVER COMMAND
+// ============================================================================
+
+/**
+ * Check if a command exists in PATH.
+ */
+async function commandExists(cmd: string): Promise<boolean> {
+  try {
+    const proc = new Deno.Command("which", { args: [cmd] });
+    const { code } = await proc.output();
+    return code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Scan for rig config files using fd.
+ * Respects .gitignore to avoid pulling in rig files from dependencies.
+ */
+async function scanForRigFiles(rootDir: string): Promise<string[]> {
+  // Require fd
+  if (!(await commandExists("fd"))) {
+    print(`
+${c("red")}Error: fd is not installed${c("reset")}
+
+rig discover requires fd for fast, gitignore-aware file scanning.
+
+Install fd:
+
+  macOS:         brew install fd
+  Ubuntu/Debian: sudo apt install fd-find
+  Fedora:        sudo dnf install fd-find
+  Arch:          sudo pacman -S fd
+
+After installing, run this command again.
+`);
+    Deno.exit(1);
+  }
+
+  const fdArgs = [
+    "--type", "f",
+    "--hidden",         // Include hidden directories for completeness
+    // Exclusions for common non-project directories
+    "--exclude", "node_modules",
+    "--exclude", ".git",
+    "--exclude", "vendor",
+    "--exclude", ".rig",
+    "--exclude", "__pycache__",
+    "--exclude", ".venv",
+    "--exclude", "dist",
+    "--exclude", "build",
+    // Pattern for rig config files (regex)
+    "(^rig\\.ya?ml$|.*\\.rig\\.yaml$)",
+    rootDir,
+  ];
+
+  const cmd = new Deno.Command("fd", { args: fdArgs });
+  const { stdout, code } = await cmd.output();
+  if (code !== 0) {
+    return [];
+  }
+
+  const output = new TextDecoder().decode(stdout).trim();
+  if (!output) {
+    return [];
+  }
+
+  return output.split("\n").filter(Boolean);
+}
+
+/**
+ * Get the current imports from a config file.
+ */
+async function getCurrentImports(configPath: string): Promise<string[]> {
+  try {
+    const { raw } = await parseConfigFile(configPath);
+    return raw.imports ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Discover rig files and suggest/update imports.
+ */
+async function cmdDiscover(rootDir: string, dryRun: boolean, autoAccept: boolean): Promise<void> {
+  const absRoot = rootDir.startsWith("/") ? rootDir : `${Deno.cwd()}/${rootDir}`;
+
+  print(`Scanning from ${absRoot}...\n`);
+
+  // Find all rig files
+  const allFiles = await scanForRigFiles(absRoot);
+
+  if (allFiles.length === 0) {
+    print("No rig files found.");
+    return;
+  }
+
+  // Sort files by path for consistent output
+  allFiles.sort();
+
+  // Find the root config (in the absRoot directory)
+  const rootConfigs = allFiles.filter((f) => {
+    const dir = f.replace(/\/[^/]+$/, "");
+    return dir === absRoot || dir === absRoot.replace(/\/$/, "");
+  });
+
+  if (rootConfigs.length === 0) {
+    print(`No root config found in ${absRoot}`);
+    print("\nFound rig files:");
+    for (const f of allFiles) {
+      const rel = f.startsWith(absRoot) ? f.slice(absRoot.length + 1) : f;
+      print(`  ${rel}`);
+    }
+    print("\nCreate a rig.yaml in the root directory and add imports.");
+    return;
+  }
+
+  // Use first root config (prefer rig.yaml over others)
+  const rootConfig = rootConfigs.find((f) => f.endsWith("/rig.yaml")) ?? rootConfigs[0];
+  const rootConfigRel = rootConfig.startsWith(absRoot + "/")
+    ? rootConfig.slice(absRoot.length + 1)
+    : rootConfig.split("/").pop() ?? rootConfig;
+
+  print("Found rig files:");
+  for (const f of allFiles) {
+    const rel = f.startsWith(absRoot + "/") ? f.slice(absRoot.length + 1) : f.split("/").pop() ?? f;
+    const isRoot = f === rootConfig;
+    print(`  ${rel}${isRoot ? " (root)" : ""}`);
+  }
+
+  // Get current imports from root config
+  const currentImports = await getCurrentImports(rootConfig);
+
+  print(`\nCurrent imports in ${rootConfigRel}:`);
+  if (currentImports.length === 0) {
+    print("  (none)");
+  } else {
+    for (const imp of currentImports) {
+      print(`  - ${imp}`);
+    }
+  }
+
+  // Find files that aren't imported (excluding the root config itself)
+  const importedSet = new Set(currentImports.map((imp) =>
+    imp.startsWith("/") ? imp : `${absRoot}/${imp}`
+  ));
+
+  const missing: string[] = [];
+  for (const f of allFiles) {
+    if (f === rootConfig) continue;
+    if (!importedSet.has(f)) {
+      const rel = f.startsWith(absRoot + "/") ? f.slice(absRoot.length + 1) : f;
+      missing.push(rel);
+    }
+  }
+
+  if (missing.length === 0) {
+    print("\nAll rig files are imported. Nothing to do.");
+    return;
+  }
+
+  print("\nMissing (not imported):");
+  for (const m of missing) {
+    print(`  + ${m}`);
+  }
+
+  if (dryRun) {
+    print("\n[Dry run] Would add the above imports to rig.yaml");
+    return;
+  }
+
+  // Prompt user unless auto-accept
+  if (!autoAccept) {
+    const answer = prompt("\nAdd to imports? [y/N]");
+    if (answer?.toLowerCase() !== "y") {
+      print("Aborted.");
+      return;
+    }
+  }
+
+  // Update the root config with new imports
+  const content = await Deno.readTextFile(rootConfig);
+  const raw = parseYaml(content) as RawConfig;
+
+  const newImports = [...(raw.imports ?? []), ...missing];
+  raw.imports = newImports;
+
+  // Rebuild YAML preserving structure
+  const newContent = stringifyYaml(raw as Record<string, unknown>);
+  await Deno.writeTextFile(rootConfig, newContent);
+
+  print(`\nUpdated ${rootConfigRel} with ${missing.length} new import(s).`);
+}
+
+// ============================================================================
 // CLI
 // ============================================================================
 
@@ -2039,6 +2435,9 @@ TASKS:
   tasks [--group <name>]       List all tasks
   run/task <path> [args...]    Run a task (group.name or group.service.name)
 
+MULTI-FILE:
+  discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
+
 OTHER:
   version                   Show version
   help                      Show this help
@@ -2064,9 +2463,19 @@ EXAMPLES:
   rig run backend.api.build Run a service-level task
   rig run backend.api.test --watch  Pass args to a task
   rig config --json         Show raw JSON config
+  rig discover              Scan for rig files and update imports
+  rig discover --dry-run    Show what would be imported
 
 CONFIG:
-  Looks for rig.yaml or rig.yml in current directory.
+  Searches upward from current directory for rig.yaml, rig.yml, or *.rig.yaml.
+  Supports imports to compose configs from multiple files:
+
+    imports:
+      - db/rig.yaml
+      - backend/rig.yaml
+
+  All imported files are merged into a flat namespace. Service names must be
+  unique across all files. Circular imports are detected and reported.
 `);
 }
 
@@ -2101,6 +2510,43 @@ async function main(): Promise<void> {
       Deno.exit(1);
     }
     return;
+  }
+
+  // Handle 'discover' - scan for rig files and update imports
+  if (Deno.args[0] === "discover") {
+    const discoverArgs = parseArgs(Deno.args.slice(1), {
+      boolean: ["help", "h", "dry-run", "yes", "y", "verbose", "v"],
+      alias: { h: "help", y: "yes", v: "verbose" },
+    });
+
+    VERBOSE = discoverArgs.verbose;
+
+    if (discoverArgs.help) {
+      print(`
+rig discover - scan for rig files and update imports
+
+USAGE:
+  rig discover [options] [path]
+
+OPTIONS:
+  --dry-run    Show what would be imported without making changes
+  -y, --yes    Auto-accept changes without prompting
+  -v, --verbose Enable verbose logging
+  -h, --help   Show this help
+
+DESCRIPTION:
+  Scans for rig.yaml, rig.yml, and *.rig.yaml files starting from the
+  specified path (or current directory). Shows which files are not yet
+  imported in the root config and offers to add them.
+
+  Uses 'fd' for fast, gitignore-aware scanning. Requires fd to be installed.
+`);
+      Deno.exit(0);
+    }
+
+    const path = (discoverArgs._.map(String)[0]) ?? Deno.cwd();
+    await cmdDiscover(path, discoverArgs["dry-run"], discoverArgs.yes);
+    Deno.exit(0);
   }
 
   // Handle 'run' or 'task' (singular) - execute a task

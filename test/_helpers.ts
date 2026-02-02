@@ -98,18 +98,33 @@ export async function tmux(args: string[]): Promise<{ code: number; stdout: stri
   };
 }
 
-// Helper to check if a session exists
-export async function sessionExists(name: string): Promise<boolean> {
-  const { code } = await tmux(["has-session", "-t", `${TEST_GROUP}-${name}`]);
+// Helper to check if a session exists (default group: TEST_GROUP)
+export async function sessionExists(name: string, group: string = TEST_GROUP): Promise<boolean> {
+  const { code } = await tmux(["has-session", "-t", `${group}-${name}`]);
   return code === 0;
 }
 
-// Helper to kill all test sessions
+// Helper to check if any tmux session with given name exists (no group prefix)
+export async function sessionExistsByFullName(sessionName: string): Promise<boolean> {
+  const { code } = await tmux(["has-session", "-t", sessionName]);
+  return code === 0;
+}
+
+// Test group prefixes used in multi-file tests
+const ALL_TEST_GROUPS = [TEST_GROUP, "database", "backend", "frontend", "infra", "shared", "app", "root", "mygroup", "group-a", "group-b", "a-group", "sub", "new"];
+
+// Helper to kill all test sessions (from all test-related groups)
 export async function cleanupSessions(): Promise<void> {
   const { stdout } = await tmux(["list-sessions", "-F", "#{session_name}"]);
-  const sessions = stdout.trim().split("\n").filter((s) => s.startsWith(`${TEST_GROUP}-`));
+  const sessions = stdout.trim().split("\n").filter(Boolean);
   for (const session of sessions) {
-    await tmux(["kill-session", "-t", session]);
+    // Kill any session that starts with a known test group prefix
+    for (const prefix of ALL_TEST_GROUPS) {
+      if (session.startsWith(`${prefix}-`)) {
+        await tmux(["kill-session", "-t", session]);
+        break;
+      }
+    }
   }
 }
 

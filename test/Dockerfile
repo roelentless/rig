@@ -1,12 +1,14 @@
 # Dockerfile for running rig tests on Linux
 FROM denoland/deno:debian
 
-# Install tmux and procps (for ps, pgrep)
+# Install tmux, procps (for ps, pgrep), and fd-find (for discover)
 RUN apt-get update && apt-get install -y \
     tmux \
     procps \
     lsof \
-    && rm -rf /var/lib/apt/lists/*
+    fd-find \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/bin/fd
 
 WORKDIR /app
 

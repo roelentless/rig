@@ -14,6 +14,7 @@ import {
   getTestTmpDir,
   rig,
   sessionExists,
+  sessionExistsByFullName,
   setupTestConfig,
   stripAnsi,
   teardown,
@@ -622,6 +623,562 @@ Deno.test({
       assertStringIncludes(stdout, "Unknown group");
     } finally {
       await teardown();
+    }
+  },
+});
+
+// ============================================================================
+// MULTI-FILE CONFIG TESTS
+// ============================================================================
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - imports merge into flat namespace`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    // Create directory structure
+    await Deno.mkdir(`${testTmpDir}/db`, { recursive: true });
+
+    // Root config with import
+    const rootConfig = `
+imports:
+  - db/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      api:
+        command: sh -c "echo 'api started'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // DB config
+    const dbConfig = `
+groups:
+  database:
+    services:
+      postgres:
+        command: sh -c "echo 'postgres started'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/db/rig.yaml`, dbConfig);
+
+    try {
+      // Start services to verify both are accessible
+      const { code, stdout } = await rig(["start", "-d", "api", "postgres"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started api");
+      assertStringIncludes(stdout, "Started postgres");
+
+      assertEquals(await sessionExists("api", TEST_GROUP), true);
+      assertEquals(await sessionExists("postgres", "database"), true);
+
+      // Check ps shows both groups
+      const { stdout: psOutput } = await rig(["ps"]);
+      assertStringIncludes(psOutput, TEST_GROUP);
+      assertStringIncludes(psOutput, "database");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/db`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - *.rig.yaml files are recognized`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    // Root config with import of *.rig.yaml
+    const rootConfig = `
+imports:
+  - infra.rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      app:
+        command: sh -c "echo 'app'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // Infra config (*.rig.yaml pattern)
+    const infraConfig = `
+groups:
+  infra:
+    services:
+      redis:
+        command: sh -c "echo 'redis'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/infra.rig.yaml`, infraConfig);
+
+    try {
+      const { code, stdout } = await rig(["start", "-d", "redis"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started redis");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/infra.rig.yaml`).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - circular import error`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/a`, { recursive: true });
+
+    // Root imports a/rig.yaml
+    const rootConfig = `
+imports:
+  - a/rig.yaml
+
+groups:
+  root:
+    services:
+      svc1:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // a/rig.yaml imports back to root (circular)
+    const aConfig = `
+imports:
+  - ../rig.yaml
+
+groups:
+  a-group:
+    services:
+      svc2:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/a/rig.yaml`, aConfig);
+
+    try {
+      const { code, stderr } = await rig(["ps"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Circular import detected");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/a`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - import not found error`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    const config = `
+imports:
+  - nonexistent/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      svc:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    try {
+      const { code, stderr } = await rig(["ps"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Import not found");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - duplicate group name error`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/sub`, { recursive: true });
+
+    const rootConfig = `
+imports:
+  - sub/rig.yaml
+
+groups:
+  mygroup:
+    services:
+      svc1:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // Sub config has same group name
+    const subConfig = `
+groups:
+  mygroup:
+    services:
+      svc2:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/sub/rig.yaml`, subConfig);
+
+    try {
+      const { code, stderr } = await rig(["ps"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Duplicate group");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/sub`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - duplicate service name error`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/sub`, { recursive: true });
+
+    const rootConfig = `
+imports:
+  - sub/rig.yaml
+
+groups:
+  group-a:
+    services:
+      api:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // Sub config has same service name in different group
+    const subConfig = `
+groups:
+  group-b:
+    services:
+      api:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/sub/rig.yaml`, subConfig);
+
+    try {
+      const { code, stderr } = await rig(["ps"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Duplicate service");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/sub`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - same file imported twice is deduped`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/shared`, { recursive: true });
+    await Deno.mkdir(`${testTmpDir}/app`, { recursive: true });
+
+    // Shared DB config
+    const sharedConfig = `
+groups:
+  shared:
+    services:
+      db:
+        command: sh -c "echo 'db'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/shared/rig.yaml`, sharedConfig);
+
+    // App config imports shared
+    const appConfig = `
+imports:
+  - ../shared/rig.yaml
+
+groups:
+  app:
+    services:
+      api:
+        command: sh -c "echo 'api'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/app/rig.yaml`, appConfig);
+
+    // Root imports both shared and app (shared gets imported twice)
+    const rootConfig = `
+imports:
+  - shared/rig.yaml
+  - app/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      root-svc:
+        command: sh -c "echo 'root'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    try {
+      // Should succeed - shared/rig.yaml deduped
+      const { code, stdout } = await rig(["start", "-d", "db", "api", "root-svc"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started db");
+      assertStringIncludes(stdout, "Started api");
+      assertStringIncludes(stdout, "Started root-svc");
+
+      // Verify sessions exist in their respective groups
+      assertEquals(await sessionExists("db", "shared"), true);
+      assertEquals(await sessionExists("api", "app"), true);
+      assertEquals(await sessionExists("root-svc", TEST_GROUP), true);
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/shared`, { recursive: true }).catch(() => {});
+      await Deno.remove(`${testTmpDir}/app`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - paths expand relative to each config's location`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/backend`, { recursive: true });
+
+    // Create env file in backend directory
+    await Deno.writeTextFile(`${testTmpDir}/backend/backend.env`, "BACKEND_VAR=from-backend-env\n");
+
+    // Root config
+    const rootConfig = `
+imports:
+  - backend/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      root-svc:
+        command: sh -c "echo 'root'; sleep 30"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    // Backend config with env_file relative to its own location
+    const backendConfig = `
+groups:
+  backend:
+    services:
+      api:
+        command: sh -c "echo BACKEND_VAR=\\$BACKEND_VAR; sleep 30"
+        working_dir: .
+        env_file: ./backend.env
+`;
+    await Deno.writeTextFile(`${testTmpDir}/backend/rig.yaml`, backendConfig);
+
+    try {
+      await rig(["start", "-d", "api"]);
+      await delay(500);
+
+      const { stdout } = await rig(["logs", "api"]);
+      assertStringIncludes(stdout, "BACKEND_VAR=from-backend-env");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/backend`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - discover command lists files`,
+  async fn() {
+    // Use /tmp to avoid gitignore (fd respects .gitignore)
+    const discoverTmpDir = await Deno.makeTempDir({ prefix: "rig-discover-test-" });
+    await Deno.mkdir(`${discoverTmpDir}/sub`, { recursive: true });
+
+    const rootConfig = `
+groups:
+  root:
+    services:
+      svc:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${discoverTmpDir}/rig.yaml`, rootConfig);
+
+    const subConfig = `
+groups:
+  sub:
+    services:
+      svc2:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${discoverTmpDir}/sub/rig.yaml`, subConfig);
+
+    try {
+      const { code, stdout } = await rig(["discover", "--dry-run", discoverTmpDir]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "rig.yaml");
+      assertStringIncludes(stdout, "sub/rig.yaml");
+      assertStringIncludes(stdout, "Missing");
+      assertStringIncludes(stdout, "Dry run");
+    } finally {
+      await teardown();
+      await Deno.remove(discoverTmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - discover with --yes updates config`,
+  async fn() {
+    // Use /tmp to avoid gitignore (fd respects .gitignore)
+    const discoverTmpDir = await Deno.makeTempDir({ prefix: "rig-discover-test-" });
+    await Deno.mkdir(`${discoverTmpDir}/new-service`, { recursive: true });
+
+    const rootConfig = `
+groups:
+  root:
+    services:
+      svc:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${discoverTmpDir}/rig.yaml`, rootConfig);
+
+    const newConfig = `
+groups:
+  new:
+    services:
+      new-svc:
+        command: echo "new"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${discoverTmpDir}/new-service/rig.yaml`, newConfig);
+
+    try {
+      const { code } = await rig(["discover", "--yes", discoverTmpDir]);
+      assertEquals(code, 0);
+
+      // Verify config was updated
+      const content = await Deno.readTextFile(`${discoverTmpDir}/rig.yaml`);
+      assertStringIncludes(content, "imports:");
+      assertStringIncludes(content, "new-service/rig.yaml");
+    } finally {
+      await teardown();
+      await Deno.remove(discoverTmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - depends_on works across files`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/db`, { recursive: true });
+
+    const rootConfig = `
+imports:
+  - db/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      api:
+        command: sh -c "echo 'api started'; sleep 30"
+        working_dir: /tmp
+        depends_on: [postgres]
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    const dbConfig = `
+groups:
+  database:
+    services:
+      postgres:
+        command: sh -c "echo 'postgres started'; sleep 30"
+        working_dir: /tmp
+        healthcheck:
+          grace_ms: 100
+`;
+    await Deno.writeTextFile(`${testTmpDir}/db/rig.yaml`, dbConfig);
+
+    try {
+      const { code, stdout } = await rig(["start", "-d"]);
+      assertEquals(code, 0);
+
+      // postgres should start before api
+      const pgIdx = stdout.indexOf("Started postgres");
+      const apiIdx = stdout.indexOf("Started api");
+      assertEquals(pgIdx !== -1, true, "postgres should be started");
+      assertEquals(apiIdx !== -1, true, "api should be started");
+      assertEquals(pgIdx < apiIdx, true, "postgres should start before api");
+
+      // Verify both sessions exist
+      assertEquals(await sessionExists("postgres", "database"), true);
+      assertEquals(await sessionExists("api", TEST_GROUP), true);
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/db`, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] multi-file - depends_on invalid reference across files errors`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    await Deno.mkdir(`${testTmpDir}/sub`, { recursive: true });
+
+    const rootConfig = `
+imports:
+  - sub/rig.yaml
+
+groups:
+  ${TEST_GROUP}:
+    services:
+      api:
+        command: echo "test"
+        working_dir: /tmp
+        depends_on: [nonexistent]
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, rootConfig);
+
+    const subConfig = `
+groups:
+  sub:
+    services:
+      svc:
+        command: echo "test"
+        working_dir: /tmp
+`;
+    await Deno.writeTextFile(`${testTmpDir}/sub/rig.yaml`, subConfig);
+
+    try {
+      const { code, stderr } = await rig(["ps"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "depends on unknown service");
+    } finally {
+      await teardown();
+      await Deno.remove(`${testTmpDir}/sub`, { recursive: true }).catch(() => {});
     }
   },
 });
