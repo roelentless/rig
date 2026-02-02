@@ -1,0 +1,67 @@
+# Example: Multi-statement bash commands
+#
+# Demonstrates wrapping multiple shell commands with `bash -c`.
+# Useful for setup/teardown logic, chaining commands, or when you need
+# shell features like subshells or conditionals.
+#
+# YAML quoting tips:
+# - Outer double quotes + inner single quotes: "bash -c 'cmd1 && cmd2'"
+# - Use YAML literal blocks (|) for complex multi-line scripts
+# - Avoid colons in echo output or quote them properly
+
+groups:
+  test:
+    tasks:
+      # Chain commands with && (stops on first failure)
+      chain-and:
+        command: "bash -c 'echo Step1 && echo Step2 && echo Step3'"
+        working_dir: .
+        description: Chain commands with && (fail-fast)
+
+      # Chain commands with ; (continues even if earlier commands fail)
+      chain-semicolon:
+        command: "bash -c 'echo First; echo Second; echo Third'"
+        working_dir: .
+        description: Chain commands with ; (continue on failure)
+
+      # Multi-line script using YAML literal block
+      multiline:
+        command: |
+          bash -c '
+            echo "Setting up..."
+            MY_VAR=hello
+            echo "MY_VAR is: $MY_VAR"
+            echo "Cleanup complete"
+          '
+        working_dir: .
+        description: Multi-line bash command with variable
+
+      # Practical example: build with pre/post steps
+      build-with-hooks:
+        command: "bash -c 'echo Pre-build && rm -rf dist 2>/dev/null; echo Building && mkdir -p dist && echo built > dist/output.txt && echo Done'"
+        working_dir: .
+        description: Build with pre/post hooks
+
+      # Using subshell for isolated directory changes
+      subshell:
+        command: "bash -c '(cd /tmp && pwd && echo In-temp-dir) && echo Back-to-original'"
+        working_dir: .
+        description: Using subshell for directory changes
+
+      # Setting and using environment variables
+      env-vars:
+        command: "bash -c 'export FOO=bar && echo FOO=$FOO && export BAZ=qux && echo BAZ=$BAZ'"
+        working_dir: .
+        description: Set and use environment variables
+
+      # Conditional execution with || fallback
+      conditional:
+        command: "bash -c 'test -d /tmp && echo tmp-exists || echo tmp-missing'"
+        working_dir: .
+        description: Conditional execution with || fallback
+
+      # Exit code propagation
+      exit-code:
+        command: "bash -c 'echo Running && exit 0'"
+        working_dir: .
+        description: Exit code is propagated from bash
