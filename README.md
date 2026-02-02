@@ -32,6 +32,20 @@ rig run backend.api.test --watch  # Pass args to a task
 Services run in tmux sessions - they survive terminal close and can be reattached.
 Tasks execute directly - they pass through stdin/stdout and exit codes.
 
+### Why rig?
+
+Smoother dev workflow when working with many services, apps, and commands - without having to delegate everything to docker.
+
+- **Simple config** - one yaml or multiple that compose via imports
+- **No state, no runtime** - tmux is the only dependency, no daemon running
+- **Survives terminal close** - tmux keeps services running, come back anytime
+- **Optional file watching** - services auto-restart when code changes
+- **Supports monorepo workflows** - run from any subdirectory, configs compose via imports
+- **Runs anything** - npm, deno, cargo, docker, scripts - doesn't matter
+- **Greppable file logs** - logs persist to disk, easy to search for you or agents
+- **Quick inspection** - see resource usage and ports at a glance
+- **Fast project switching** - spin up/down entire setups when switching between projects
+
 ## Install
 
 **Prerequisites:** tmux and deno
@@ -346,6 +360,27 @@ tmux is the source of truth for services - no state files.
 - Status: `tmux list-sessions` filtered by group prefix
 
 Tasks execute directly via `sh -c` with inherited stdin/stdout/stderr.
+
+## Comparison with other tools
+
+rig is not a build tool or task runner replacement. It's a dev workflow orchestrator.
+
+| Tool | Focus | rig's approach |
+|------|-------|----------------|
+| **Make** | Build dependency graphs | not a focus |
+| **npm/deno scripts/tasks** | Package-level tasks | rig spans multiple packages, manages long-running services |
+| **docker-compose** | Container orchestration | rig runs native processes via tmux, no containers required |
+
+**What rig doesn't do:**
+- Incremental builds or caching
+- Makefile compatibility
+- Container management
+- CI/CD pipelines
+
+**What rig does well:**
+- Start your dev stack with one command
+- Keep services running across terminal sessions
+- Organize tasks for any build system in one place
 
 ## License
 
