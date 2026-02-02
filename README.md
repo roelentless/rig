@@ -45,6 +45,7 @@ Smoother dev workflow when working with many services, apps, and commands - with
 - **Greppable file logs** - logs persist to disk, easy to search for you or agents
 - **Quick inspection** - see resource usage and ports at a glance
 - **Fast project switching** - spin up/down entire setups when switching between projects
+- **Deploy-aligned env vars** - in config or external files, no dotenv in code, same pattern as production
 
 ## Install
 
@@ -245,6 +246,8 @@ env_file:
 ```
 
 Files are processed in order. Later files override earlier. Inline `environment` values override `env_file` values.
+
+Great for keeping development `.env` files outside of your repo - reduces secret sharing with LLM agents in common workflows.
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet
 
