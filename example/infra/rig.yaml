@@ -1,0 +1,10 @@
+# Infrastructure services (imported by root config)
+
+groups:
+  infra:
+    services:
+      mail:
+        command: deno run -A mail.ts
+        working_dir: .
+        healthcheck:
+          grace_ms: 300

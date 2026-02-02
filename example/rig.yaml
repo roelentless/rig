@@ -1,3 +1,10 @@
+# Example rig config - all features in one file
+#
+# See cli-log.md for real command output examples.
+
+imports:
+  - infra/rig.yaml  # Multi-file configs: import services from other files
+
 groups:
   backend:
     services:
@@ -5,17 +12,17 @@ groups:
         command: deno run -A db.ts
         working_dir: .
         healthcheck:
-          grace_ms: 500
+          grace_ms: 500  # Wait before checking health
 
       api:
         command: deno run -A api.ts
         working_dir: .
-        env_file: ./api.env
-        depends_on: [db]
-        watch:
+        env_file: ./api.env  # Load environment from file
+        depends_on: [db]     # Start db first
+        watch:               # Auto-restart on file changes
           extensions: [ts]
           ignore: ['*_test.ts']
-        tasks:
+        tasks:               # Service-level tasks
           test:
             command: deno test -A
           check:
@@ -27,7 +34,7 @@ groups:
         working_dir: .
         depends_on: [db]
 
-    tasks:
+    tasks:  # Group-level tasks
       build:
         command: deno compile -A -o dist/api api.ts
         working_dir: .

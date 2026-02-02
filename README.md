@@ -95,7 +95,7 @@ groups:
         working_dir: ./frontend
 ```
 
-See the [example/](example/) folder for a single-file configuration, and [example-monorepo/](example-monorepo/) for a multi-file setup.
+See [example/](example/) for a working config with all features, and [example/cli-log.md](example/cli-log.md) for real command output.
 
 ## Commands
 
@@ -303,7 +303,7 @@ cd monorepo               # Root rig.yaml imports everything
 rig ps                    # Shows ALL services
 ```
 
-See [example-monorepo/](example-monorepo/) for a complete multi-file setup.
+See [example/](example/) for a complete setup demonstrating imports.
 
 ## Log files
 
