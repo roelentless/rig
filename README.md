@@ -250,6 +250,8 @@ env_file:
 
 Files are processed in order. Later files override earlier. Inline `environment` values override `env_file` values.
 
+The `env_file` path is relative to the config file location. Values inside the env file that contain relative paths will resolve relative to `working_dir` at runtime (where the service executes).
+
 Great for keeping development `.env` files outside of your repo - reduces secret sharing with LLM agents in common workflows.
 
 Available colors: cyan, yellow, magenta, green, blue, orange, red, lavender, pink, teal, lime, coral, sky, gold, violet

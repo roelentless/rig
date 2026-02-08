@@ -176,6 +176,18 @@ const KEY_CTRL_C = 3;
 let VERBOSE = false;
 
 // ============================================================================
+// ERRORS
+// ============================================================================
+
+/** Config errors are displayed cleanly without stack traces */
+class ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
+
+// ============================================================================
 // UTILITIES
 // ============================================================================
 
@@ -222,7 +234,17 @@ function logSystem(msg: string): void {
 }
 
 function logError(msg: string): void {
-  log(msg, "rig", "red");
+  // Log errors to stderr
+  const now = new Date();
+  const ts =
+    now.getHours().toString().padStart(2, "0") +
+    ":" +
+    now.getMinutes().toString().padStart(2, "0") +
+    ":" +
+    now.getSeconds().toString().padStart(2, "0") +
+    "." +
+    now.getMilliseconds().toString().padStart(3, "0");
+  console.error(`${c("dim")}${ts}${c("reset")} ${c("red")}${"rig".padEnd(12)}${c("reset")} ${msg}`);
 }
 
 function logVerbose(msg: string): void {
@@ -313,7 +335,7 @@ async function loadEnvFiles(
       Object.assign(result, parsed);
     } catch (err) {
       if (entry.required !== false) {
-        throw new Error(`Failed to load env file '${entry.path}': ${err instanceof Error ? err.message : String(err)}`);
+        throw new ConfigError(`Failed to load env file '${entry.path}': ${err instanceof Error ? err.message : String(err)}`);
       }
       // required: false - silently skip
     }
@@ -545,7 +567,7 @@ async function findNearestConfig(startDir: string): Promise<string> {
     const parent = dir.replace(/\/[^/]+$/, "") || "/";
     if (parent === dir) {
       // Reached filesystem root
-      throw new Error("No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml");
+      throw new ConfigError("No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml");
     }
     dir = parent;
   }
@@ -563,7 +585,7 @@ async function findConfig(): Promise<string> {
       // Continue
     }
   }
-  throw new Error(`Config file not found. Expected: ${CONFIG_NAMES.join(" or ")}`);
+  throw new ConfigError(`Config file not found. Expected: ${CONFIG_NAMES.join(" or ")}`);
 }
 
 /**
@@ -585,14 +607,14 @@ async function parseConfigFile(configPath: string): Promise<{ raw: RawConfig; co
   try {
     content = await Deno.readTextFile(configPath);
   } catch (err) {
-    throw new Error(`Failed to read config file '${configPath}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new ConfigError(`Failed to read config file '${configPath}': ${err instanceof Error ? err.message : String(err)}`);
   }
 
   let raw: RawConfig;
   try {
     raw = parseYaml(content) as RawConfig;
   } catch (err) {
-    throw new Error(`Invalid YAML in ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new ConfigError(`Invalid YAML in ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Handle empty file or null content
@@ -614,7 +636,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
   // Circular import check
   if (importChain.includes(configPath)) {
     const cycle = [...importChain, configPath].map(p => p.replace(Deno.cwd() + "/", "./")).join("\n  → ");
-    throw new Error(`Circular import detected:\n  ${cycle}`);
+    throw new ConfigError(`Circular import detected:\n  ${cycle}`);
   }
 
   // Dedup check - already loaded this exact file
@@ -635,14 +657,14 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
     for (const [groupName, groupDef] of Object.entries(raw.groups as Record<string, unknown>)) {
       // Validate group name
       if (!/^[a-zA-Z0-9_-]+$/.test(groupName)) {
-        throw new Error(`Invalid group name '${groupName}' in ${configPath}: must be alphanumeric with hyphens/underscores only`);
+        throw new ConfigError(`Invalid group name '${groupName}' in ${configPath}: must be alphanumeric with hyphens/underscores only`);
       }
 
       const g = groupDef as Record<string, unknown>;
 
       // Groups can have services, tasks, or both
       if (!g.services && !g.tasks) {
-        throw new Error(`Group '${groupName}' in ${configPath} must have 'services' and/or 'tasks'`);
+        throw new ConfigError(`Group '${groupName}' in ${configPath} must have 'services' and/or 'tasks'`);
       }
 
       const services: Record<string, ServiceDef> = {};
@@ -653,10 +675,10 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
         for (const [name, def] of Object.entries(g.services as Record<string, unknown>)) {
           const d = def as Record<string, unknown>;
           if (!d.command || typeof d.command !== "string") {
-            throw new Error(`Service '${groupName}.${name}' in ${configPath} must have a 'command' field`);
+            throw new ConfigError(`Service '${groupName}.${name}' in ${configPath} must have a 'command' field`);
           }
           if (!d.working_dir || typeof d.working_dir !== "string") {
-            throw new Error(`Service '${groupName}.${name}' in ${configPath} must have a 'working_dir' field`);
+            throw new ConfigError(`Service '${groupName}.${name}' in ${configPath} must have a 'working_dir' field`);
           }
 
           // Resolve relative working_dir paths relative to this config's directory
@@ -676,7 +698,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
           let depends_on: string[] | undefined;
           if (d.depends_on) {
             if (!Array.isArray(d.depends_on)) {
-              throw new Error(`Service '${groupName}.${name}' in ${configPath} depends_on must be an array`);
+              throw new ConfigError(`Service '${groupName}.${name}' in ${configPath} depends_on must be an array`);
             }
             depends_on = d.depends_on as string[];
           }
@@ -724,7 +746,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
             for (const [taskName, taskDef] of Object.entries(d.tasks as Record<string, unknown>)) {
               const r = taskDef as Record<string, unknown>;
               if (!r.command || typeof r.command !== "string") {
-                throw new Error(`Task '${groupName}.${name}.${taskName}' in ${configPath} must have a 'command' field`);
+                throw new ConfigError(`Task '${groupName}.${name}.${taskName}' in ${configPath} must have a 'command' field`);
               }
 
               // Resolve working_dir if specified
@@ -827,10 +849,10 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
         for (const [taskName, taskDef] of Object.entries(g.tasks as Record<string, unknown>)) {
           const r = taskDef as Record<string, unknown>;
           if (!r.command || typeof r.command !== "string") {
-            throw new Error(`Task '${groupName}.${taskName}' in ${configPath} must have a 'command' field`);
+            throw new ConfigError(`Task '${groupName}.${taskName}' in ${configPath} must have a 'command' field`);
           }
           if (!r.working_dir || typeof r.working_dir !== "string") {
-            throw new Error(`Task '${groupName}.${taskName}' in ${configPath} must have a 'working_dir' field (group-level tasks cannot inherit)`);
+            throw new ConfigError(`Task '${groupName}.${taskName}' in ${configPath} must have a 'working_dir' field (group-level tasks cannot inherit)`);
           }
 
           // Resolve relative working_dir
@@ -900,7 +922,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
       try {
         await Deno.stat(absImportPath);
       } catch {
-        throw new Error(`Import not found: ${importPath}\n  in ${configPath}`);
+        throw new ConfigError(`Import not found: ${importPath}\n  in ${configPath}`);
       }
 
       const childCtx: LoadContext = {
@@ -915,7 +937,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
       // Merge child groups into current groups, checking for duplicates
       for (const [groupName, groupDef] of Object.entries(childResult.groups)) {
         if (groups[groupName]) {
-          throw new Error(`Duplicate group '${groupName}' defined in:\n  - ${configPath}\n  - ${absImportPath}`);
+          throw new ConfigError(`Duplicate group '${groupName}' defined in:\n  - ${configPath}\n  - ${absImportPath}`);
         }
         groups[groupName] = groupDef;
       }
@@ -923,7 +945,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
       // Merge child services, checking for duplicates
       for (const [serviceName, groupName] of childResult.seenServices) {
         if (seenServices.has(serviceName)) {
-          throw new Error(
+          throw new ConfigError(
             `Duplicate service '${serviceName}' found in:\n` +
             `  - group '${seenServices.get(serviceName)}'\n` +
             `  - group '${groupName}' in ${absImportPath}`
@@ -960,7 +982,7 @@ async function loadConfigTree(rootPath: string): Promise<{ config: Config; confi
     for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
       for (const dep of serviceDef.depends_on ?? []) {
         if (!result.seenServices.has(dep)) {
-          throw new Error(`Service '${groupName}.${serviceName}' depends on unknown service '${dep}'`);
+          throw new ConfigError(`Service '${groupName}.${serviceName}' depends on unknown service '${dep}'`);
         }
       }
     }
@@ -1019,14 +1041,14 @@ function resolveTask(path: string, config: Config): ResolvedTask {
   const parts = path.split(".");
 
   if (parts.length < 2 || parts.length > 3) {
-    throw new Error(`Invalid task path '${path}'. Use 'group.task' or 'group.service.task'`);
+    throw new ConfigError(`Invalid task path '${path}'. Use 'group.task' or 'group.service.task'`);
   }
 
   const [groupName, secondPart, thirdPart] = parts;
 
   const groupDef = config.groups[groupName];
   if (!groupDef) {
-    throw new Error(`Unknown group '${groupName}'`);
+    throw new ConfigError(`Unknown group '${groupName}'`);
   }
 
   if (parts.length === 2) {
@@ -1047,7 +1069,7 @@ function resolveTask(path: string, config: Config): ResolvedTask {
     }
 
     // Not a group task - error
-    throw new Error(`Unknown task '${path}'. Did you mean 'group.service.task'?`);
+    throw new ConfigError(`Unknown task '${path}'. Did you mean 'group.service.task'?`);
   }
 
   // parts.length === 3: group.service.task
@@ -1056,12 +1078,12 @@ function resolveTask(path: string, config: Config): ResolvedTask {
 
   const serviceDef = groupDef.services?.[serviceName];
   if (!serviceDef) {
-    throw new Error(`Unknown service '${groupName}.${serviceName}'`);
+    throw new ConfigError(`Unknown service '${groupName}.${serviceName}'`);
   }
 
   const taskDef = serviceDef.tasks?.[taskName];
   if (!taskDef) {
-    throw new Error(`Unknown task '${path}'`);
+    throw new ConfigError(`Unknown task '${path}'`);
   }
 
   // Merge service config with task config
@@ -1150,7 +1172,7 @@ function resolveTargets(
     for (const groupName of groupNames) {
       const groupDef = config.groups[groupName];
       if (!groupDef) {
-        throw new Error(`Unknown group: ${groupName}`);
+        throw new ConfigError(`Unknown group: ${groupName}`);
       }
       if (!groupDef.services) continue;
       for (const [serviceName, serviceDef] of Object.entries(groupDef.services)) {
@@ -1166,7 +1188,7 @@ function resolveTargets(
     for (const name of serviceNames) {
       const resolved = lookup.get(name);
       if (!resolved) {
-        throw new Error(`Unknown service: ${name}`);
+        throw new ConfigError(`Unknown service: ${name}`);
       }
       services.push(resolved);
     }
@@ -2687,12 +2709,11 @@ async function main(): Promise<void> {
       cmdTaskList(config, groupFilter);
       Deno.exit(0);
     } catch (err) {
-      if (err instanceof Error) {
+      if (err instanceof ConfigError) {
         logError(err.message);
-      } else {
-        throw err;
+        Deno.exit(1);
       }
-      Deno.exit(1);
+      throw err;
     }
     return;
   }
@@ -2782,12 +2803,11 @@ DESCRIPTION:
       const code = await cmdTasks(resolved, passArgs, parallel);
       Deno.exit(code);
     } catch (err) {
-      if (err instanceof Error) {
+      if (err instanceof ConfigError) {
         logError(err.message);
-      } else {
-        throw err;
+        Deno.exit(1);
       }
-      Deno.exit(1);
+      throw err;
     }
     return;
   }
@@ -2867,8 +2887,8 @@ DESCRIPTION:
           break;
       }
     } catch (err) {
-      if (err instanceof Error && (err.message.includes("Config file not found") || err.message.includes("No rig config found"))) {
-        console.error("No config file found. Run 'rig init' to create one.");
+      if (err instanceof ConfigError) {
+        logError(err.message);
         Deno.exit(1);
       }
       throw err;

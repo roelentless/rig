@@ -604,9 +604,9 @@ Deno.test({
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stdout } = await rig(["run", `${TEST_GROUP}.nonexistent`]);
+      const { code, stderr } = await rig(["run", `${TEST_GROUP}.nonexistent`]);
       assertEquals(code, 1);
-      assertStringIncludes(stdout, "Unknown task");
+      assertStringIncludes(stderr, "Unknown task");
     } finally {
       await teardown();
     }
@@ -618,9 +618,9 @@ Deno.test({
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stdout } = await rig(["run", "badgroup.cmd"]);
+      const { code, stderr } = await rig(["run", "badgroup.cmd"]);
       assertEquals(code, 1);
-      assertStringIncludes(stdout, "Unknown group");
+      assertStringIncludes(stderr, "Unknown group");
     } finally {
       await teardown();
     }
@@ -683,14 +683,14 @@ Deno.test({
     await setupTestConfig();
     try {
       // fail-task exits with 3, but other tasks should still run in parallel
-      const { code, stdout } = await rig(["run", "-p", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.fail-task`, `${TEST_GROUP}.task-c`]);
+      const { code, stdout, stderr } = await rig(["run", "-p", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.fail-task`, `${TEST_GROUP}.task-c`]);
       assertEquals(code, 3);
       assertStringIncludes(stdout, "task-a-output");
       assertStringIncludes(stdout, "fail-task-ran");
       // task-c SHOULD have run (parallel continues on failure)
       assertStringIncludes(stdout, "task-c-output");
-      // Failure shown immediately
-      assertStringIncludes(stdout, "failed with exit code 3");
+      // Failure shown immediately (on stderr)
+      assertStringIncludes(stderr, "failed with exit code 3");
     } finally {
       await teardown();
     }
@@ -702,9 +702,9 @@ Deno.test({
   async fn() {
     await setupTestConfig();
     try {
-      const { code, stdout } = await rig(["run", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.task-b`, "--", "some", "args"]);
+      const { code, stderr } = await rig(["run", `${TEST_GROUP}.task-a`, `${TEST_GROUP}.task-b`, "--", "some", "args"]);
       assertEquals(code, 1);
-      assertStringIncludes(stdout, "Cannot pass arguments when running multiple tasks");
+      assertStringIncludes(stderr, "Cannot pass arguments when running multiple tasks");
     } finally {
       await teardown();
     }
