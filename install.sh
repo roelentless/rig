@@ -488,7 +488,7 @@ main() {
     esac
   done
 
-  printf "\n  ${BOLD}rig installer${RESET}\n"
+  printf "\n  ${BOLD}rig installer / upgrader${RESET}\n"
 
   # Platform
   detect_platform
@@ -510,7 +510,7 @@ main() {
 
   # All deps present and up to date → just install/upgrade rig
   if $HAS_DENO && ! $DENO_OUTDATED && $HAS_TMUX && $HAS_FD && $HAS_WATCHEXEC; then
-    printf "\n  All dependencies satisfied.\n"
+    printf "\n  All dependencies satisfied. Upgrading rig...\n"
     echo ""
     install_rig
     verify_path

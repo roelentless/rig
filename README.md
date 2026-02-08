@@ -51,13 +51,13 @@ Smoother dev workflow when working with many services, apps, and commands - with
 
 ## Install
 
-**One-liner** (macOS, Debian/Ubuntu, Fedora, Arch):
+**Install or upgrade** (macOS, Debian/Ubuntu, Fedora, Arch):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
 ```
 
-Checks what's missing, shows the install plan, asks before running anything. Installs deno, tmux, fd, watchexec, and rig.
+Checks what's missing, shows the install plan, asks before running anything. Safe to re-run for upgrades.
 
 
 ### Manual install
