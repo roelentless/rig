@@ -51,16 +51,35 @@ Smoother dev workflow when working with many services, apps, and commands - with
 
 ## Install
 
-**Prerequisites:** tmux and deno
+**One-liner** (macOS, Debian/Ubuntu, Fedora, Arch):
 
-**Optional:** fd (faster file scanning), watchexec (file watching for auto-restart)
+```bash
+curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
+```
+
+Checks what's missing, shows the install plan, asks before running anything. Installs deno, tmux, fd, watchexec, and rig.
+
+
+### Manual install
+
+**Prerequisites:** deno (2.5+), tmux, fd, watchexec
 
 ```bash
 # macOS
 brew install tmux deno fd watchexec
 
-# Linux
-sudo apt install tmux fd-find watchexec
+# Linux (Debian/Ubuntu)
+sudo apt install tmux fd-find
+curl -fsSL https://deno.land/install.sh | sh
+# watchexec: install .deb from https://github.com/watchexec/watchexec/releases
+
+# Linux (Fedora)
+sudo dnf install tmux fd-find
+curl -fsSL https://deno.land/install.sh | sh
+# watchexec: install .rpm from https://github.com/watchexec/watchexec/releases
+
+# Linux (Arch)
+sudo pacman -S tmux fd watchexec
 curl -fsSL https://deno.land/install.sh | sh
 ```
 

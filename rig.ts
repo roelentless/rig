@@ -639,16 +639,15 @@ function printTmuxInstallGuide(): void {
   print(`
 ${c("red")}Error: tmux is not installed${c("reset")}
 
-rig requires tmux to manage background processes.
+tmux is required to manage background processes.
 
-Install tmux:
+Install via the rig installer or manually:
 
-  macOS:        brew install tmux
+  Installer:     curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
+  macOS:         brew install tmux
   Ubuntu/Debian: sudo apt install tmux
-  Fedora:       sudo dnf install tmux
-  Arch:         sudo pacman -S tmux
-
-After installing, run this command again.
+  Fedora:        sudo dnf install tmux
+  Arch:          sudo pacman -S tmux
 `);
 }
 
@@ -2547,16 +2546,14 @@ async function requireWatchexec(): Promise<void> {
   print(`
 ${c("red")}Error: watchexec is not installed${c("reset")}
 
-Services with 'watch' configuration require watchexec for file watching.
+watchexec is required for file watching (auto-restart on changes).
 
-Install watchexec:
+Install via the rig installer or manually:
 
+  Installer:     curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
   macOS:         brew install watchexec
-  Ubuntu/Debian: sudo apt install watchexec
   Arch:          sudo pacman -S watchexec
-  Cargo:         cargo install watchexec-cli
-
-After installing, run this command again.
+  Other Linux:   https://github.com/watchexec/watchexec/releases
 `);
   Deno.exit(1);
 }
@@ -2571,16 +2568,15 @@ async function scanForRigFiles(rootDir: string): Promise<string[]> {
     print(`
 ${c("red")}Error: fd is not installed${c("reset")}
 
-rig discover requires fd for fast, gitignore-aware file scanning.
+fd is required for fast, gitignore-aware file scanning.
 
-Install fd:
+Install via the rig installer or manually:
 
+  Installer:     curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
   macOS:         brew install fd
   Ubuntu/Debian: sudo apt install fd-find
   Fedora:        sudo dnf install fd-find
   Arch:          sudo pacman -S fd
-
-After installing, run this command again.
 `);
     Deno.exit(1);
   }
