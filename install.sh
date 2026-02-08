@@ -550,7 +550,16 @@ main() {
   printf "\n"
   ok "Installation complete!"
   printf "\n"
-  printf "  Get started:\n"
+  printf "  To activate in this shell:\n"
+  CURRENT_SHELL=$(basename "${SHELL:-/bin/sh}")
+  case "$CURRENT_SHELL" in
+    zsh)  printf "    source ~/.zshrc\n" ;;
+    bash) printf "    source ~/.bashrc\n" ;;
+    fish) printf "    source ~/.config/fish/config.fish\n" ;;
+    *)    printf "    exec \$SHELL\n" ;;
+  esac
+  printf "\n"
+  printf "  Then get started:\n"
   printf "    rig init      Create a rig.yaml\n"
   printf "    rig --help    Show all commands\n"
   printf "\n"
