@@ -188,6 +188,131 @@ class ConfigError extends Error {
 }
 
 // ============================================================================
+// SCHEMA VALIDATION
+// ============================================================================
+
+// Known keys at each level of the config hierarchy
+const SCHEMA = {
+  root: new Set(["imports", "groups"]),
+  group: new Set(["services", "tasks"]),
+  service: new Set(["command", "working_dir", "environment", "env_file", "color", "depends_on", "healthcheck", "tasks", "watch"]),
+  task: new Set(["command", "working_dir", "environment", "env_file", "description"]),
+  watch: new Set(["paths", "extensions", "patterns", "ignore", "debounce"]),
+  healthcheck: new Set(["grace_ms"]),
+  envFileEntry: new Set(["path", "required"]),
+};
+
+/**
+ * Validate that an object only contains expected keys.
+ * Returns an array of error messages for unknown keys.
+ */
+function validateKeys(
+  obj: Record<string, unknown>,
+  allowedKeys: Set<string>,
+  context: string,
+  configPath: string
+): string[] {
+  const errors: string[] = [];
+  for (const key of Object.keys(obj)) {
+    if (!allowedKeys.has(key)) {
+      const allowed = Array.from(allowedKeys).sort().join(", ");
+      errors.push(`Unknown key '${key}' in ${context} (${configPath}). Valid keys: ${allowed}`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * Validate the entire config structure, checking for unknown keys at all levels.
+ */
+function validateConfigSchema(raw: Record<string, unknown>, configPath: string): void {
+  const errors: string[] = [];
+
+  // Validate root level
+  errors.push(...validateKeys(raw, SCHEMA.root, "config root", configPath));
+
+  // Validate groups
+  if (raw.groups && typeof raw.groups === "object") {
+    for (const [groupName, groupDef] of Object.entries(raw.groups as Record<string, unknown>)) {
+      if (!groupDef || typeof groupDef !== "object") continue;
+      const g = groupDef as Record<string, unknown>;
+
+      errors.push(...validateKeys(g, SCHEMA.group, `group '${groupName}'`, configPath));
+
+      // Validate services within group
+      if (g.services && typeof g.services === "object") {
+        for (const [serviceName, serviceDef] of Object.entries(g.services as Record<string, unknown>)) {
+          if (!serviceDef || typeof serviceDef !== "object") continue;
+          const s = serviceDef as Record<string, unknown>;
+
+          errors.push(...validateKeys(s, SCHEMA.service, `service '${groupName}.${serviceName}'`, configPath));
+
+          // Validate watch config
+          if (s.watch && typeof s.watch === "object") {
+            errors.push(...validateKeys(s.watch as Record<string, unknown>, SCHEMA.watch, `watch in service '${groupName}.${serviceName}'`, configPath));
+          }
+
+          // Validate healthcheck config
+          if (s.healthcheck && typeof s.healthcheck === "object") {
+            errors.push(...validateKeys(s.healthcheck as Record<string, unknown>, SCHEMA.healthcheck, `healthcheck in service '${groupName}.${serviceName}'`, configPath));
+          }
+
+          // Validate env_file entries if array of objects
+          if (s.env_file && Array.isArray(s.env_file)) {
+            for (const entry of s.env_file) {
+              if (entry && typeof entry === "object") {
+                errors.push(...validateKeys(entry as Record<string, unknown>, SCHEMA.envFileEntry, `env_file entry in service '${groupName}.${serviceName}'`, configPath));
+              }
+            }
+          }
+
+          // Validate service-level tasks
+          if (s.tasks && typeof s.tasks === "object") {
+            for (const [taskName, taskDef] of Object.entries(s.tasks as Record<string, unknown>)) {
+              if (!taskDef || typeof taskDef !== "object") continue;
+              errors.push(...validateKeys(taskDef as Record<string, unknown>, SCHEMA.task, `task '${groupName}.${serviceName}.${taskName}'`, configPath));
+
+              // Validate env_file entries in task
+              const t = taskDef as Record<string, unknown>;
+              if (t.env_file && Array.isArray(t.env_file)) {
+                for (const entry of t.env_file) {
+                  if (entry && typeof entry === "object") {
+                    errors.push(...validateKeys(entry as Record<string, unknown>, SCHEMA.envFileEntry, `env_file entry in task '${groupName}.${serviceName}.${taskName}'`, configPath));
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Validate group-level tasks
+      if (g.tasks && typeof g.tasks === "object") {
+        for (const [taskName, taskDef] of Object.entries(g.tasks as Record<string, unknown>)) {
+          if (!taskDef || typeof taskDef !== "object") continue;
+          errors.push(...validateKeys(taskDef as Record<string, unknown>, SCHEMA.task, `task '${groupName}.${taskName}'`, configPath));
+
+          // Validate env_file entries in group task
+          const t = taskDef as Record<string, unknown>;
+          if (t.env_file && Array.isArray(t.env_file)) {
+            for (const entry of t.env_file) {
+              if (entry && typeof entry === "object") {
+                errors.push(...validateKeys(entry as Record<string, unknown>, SCHEMA.envFileEntry, `env_file entry in task '${groupName}.${taskName}'`, configPath));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // If any errors, throw them all at once
+  if (errors.length > 0) {
+    throw new ConfigError(`Config validation failed:\n  ${errors.join("\n  ")}`);
+  }
+}
+
+// ============================================================================
 // UTILITIES
 // ============================================================================
 
@@ -621,6 +746,9 @@ async function parseConfigFile(configPath: string): Promise<{ raw: RawConfig; co
   if (!raw) {
     raw = {};
   }
+
+  // Validate schema before returning
+  validateConfigSchema(raw as Record<string, unknown>, configPath);
 
   const configDir = configPath.replace(/\/[^/]+$/, "");
   return { raw, configDir };

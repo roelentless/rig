@@ -366,6 +366,33 @@ groups:
 });
 
 Deno.test({
+  name: `[${PLATFORM}] rig start - schema validation catches unknown keys`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+    const invalidConfig = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      api:
+        command: echo hello
+        working_dir: /tmp
+        env:
+          MY_VAR: test
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, invalidConfig);
+    try {
+      const { code, stderr } = await rig(["start", "-d"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Unknown key 'env'");
+      assertStringIncludes(stderr, "Valid keys:");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
   name: `[${PLATFORM}] rig start - loads env_file variables`,
   async fn() {
     const testTmpDir = getTestTmpDir();
