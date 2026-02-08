@@ -40,6 +40,23 @@
 - Use `@std/cli/parse-args` for flag parsing
 - Don't use `stopEarly: true` if flags can appear after the command
 
+### Installer (`install.sh`)
+
+- POSIX `sh` only, no bashisms — the script is piped via `curl | sh`
+- All dependencies are **required**: deno (2.5+), tmux, fd, watchexec
+- Transparency pattern: check deps → show plan with commands → ask user → execute
+- Nested-pipe issue: downloading deno installer inside a piped script needs temp file (`mktemp`), not `curl | sh` within `curl | sh`
+- Read user input when stdin is a pipe: redirect from `/dev/tty`
+- `maybe_sudo` pattern: check `id -u` for root, fallback to `sudo`
+- `deno upgrade` for existing-but-outdated deno; check if binary is writable (`[ -w "$path" ]`) to decide sudo
+- After install, tell user to `source ~/.bashrc` (or equivalent) — shell profile changes don't affect the current session
+- Deno PATH: `~/.deno/bin` is where `deno install -g` puts binaries regardless of how deno itself was installed
+- watchexec packages: brew (macOS), .deb from GitHub (Debian), .rpm from GitHub (Fedora), pacman (Arch). See [watchexec packages.md](https://github.com/watchexec/watchexec/blob/main/doc/packages.md)
+- fd packages: brew (macOS), `fd-find` (Debian/Fedora), `fd` (Arch). Debian installs as `fdfind` — needs symlink to `/usr/local/bin/fd`
+- Supported platforms: macOS (arm64, x86_64), Debian/Ubuntu, Fedora/RHEL, Arch/Manjaro. Reject unsupported with README link
+- Test with `docker run` on clean base images (debian:bookworm, fedora:41) to validate full install from scratch
+- The installer doubles as upgrader — safe to re-run. When all deps are satisfied, it just upgrades rig
+
 ### Watch (auto-restart)
 
 - Watch wraps service commands with watchexec for file-triggered restarts
@@ -47,6 +64,7 @@
 - Glob patterns need shell quoting (`shellQuote()`) to prevent shell expansion
 - Full delegation to watchexec - no rig-specific defaults or remapping
 - Check watchexec installed before starting service (`requireWatchexec()`)
+- All runtime dependency errors (tmux, fd, watchexec) point to the installer URL as first option
 
 ### Config Display
 
@@ -114,15 +132,23 @@ Key rules:
 ## Code Structure
 
 ```
-Types & Interfaces     → Data shapes (Config, GroupDef, ServiceDef, ResolvedService)
-Constants              → Colors, config names
-Utilities              → log(), buildEnvString()
-Process Metrics        → getProcessTree(), getProcessMetrics()
-Tmux Check             → checkTmux(), printTmuxInstallGuide()
-Config                 → loadConfig(), buildServiceLookup(), resolveTargets()
-SessionManager         → Class managing tmux sessions (one per group)
-Commands               → cmdStart(), cmdStop(), cmdPs(), cmdTop(), etc.
-CLI                    → main(), printUsage()
+rig.ts:
+  Types & Interfaces     → Data shapes (Config, GroupDef, ServiceDef, ResolvedService)
+  Constants              → Colors, config names
+  Utilities              → log(), buildEnvString()
+  Process Metrics        → getProcessTree(), getProcessMetrics()
+  Tmux Check             → checkTmux(), printTmuxInstallGuide()
+  Config                 → loadConfig(), buildServiceLookup(), resolveTargets()
+  SessionManager         → Class managing tmux sessions (one per group)
+  Commands               → cmdStart(), cmdStop(), cmdPs(), cmdTop(), etc.
+  CLI                    → main(), printUsage()
+
+install.sh:
+  Platform detection     → OS, arch, distro, package manager
+  Dependency check       → deno version check, has() for each tool
+  Plan display           → show_status(), show_plan() with commands + descriptions
+  Install functions      → install_deno(), upgrade_deno(), install_tmux(), etc.
+  PATH verification      → verify shell profiles contain ~/.deno/bin
 ```
 
 ## Common Pitfalls
@@ -149,6 +175,8 @@ exec deno run --allow-all --no-config 'file:///path/to/rig/rig.ts' "$@"
 ## Documentation
 
 **Keep README.md in sync with command output**: When modifying commands or their output, always run `rig -h` and update the Commands section in README.md to match the exact output. The README should reflect what users see when they run the help command.
+
+**Keep install.sh in sync with dependencies**: When adding new runtime dependencies, update `install.sh` (detection, plan display, install function), the README install section, and the error messages in `rig.ts` that guide users when a tool is missing.
 
 ## Testing
 

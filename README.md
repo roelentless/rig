@@ -39,7 +39,7 @@ Tasks execute directly - they pass through stdin/stdout and exit codes.
 Smoother dev workflow when working with many services, apps, and commands - without having to delegate everything to docker.
 
 - **Simple config** - one yaml or multiple that compose via imports
-- **No state, no runtime** - tmux is the only dependency, no daemon running
+- **No state, no runtime** - tmux is the source of truth, no daemon running
 - **Survives terminal close** - tmux keeps services running, come back anytime
 - **Optional file watching** - services auto-restart when code changes
 - **Supports monorepo workflows** - run from any subdirectory, configs compose via imports
