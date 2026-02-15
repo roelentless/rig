@@ -213,6 +213,9 @@ groups:
         depends_on: [db, cache]      # Optional. Start after these services
         healthcheck:                 # Optional. Health check settings
           grace_ms: 500              # Wait before starting dependents
+        requirements:                # Optional. Pre-start checks
+          - check: pg_isready        # Command to test (exit 0 = met)
+            command: docker start pg # Remediation if check fails
         tasks:                       # Optional. Service-level tasks
           test:
             command: deno test -A
@@ -303,6 +306,30 @@ All options map directly to watchexec flags - no remapping or rig-specific defau
 | `patterns` | string[] | `--filter` | Include glob patterns |
 | `ignore` | string[] | `--ignore` | Exclude glob patterns |
 | `debounce` | string | `--debounce` | Debounce duration (e.g., `500ms`) |
+
+### Requirements (pre-start checks)
+
+Services can declare prerequisites that are checked (and optionally remediated) before starting:
+
+```yaml
+groups:
+  backend:
+    services:
+      api:
+        command: deno run -A server.ts
+        working_dir: .
+        requirements:
+          - check: test -S /var/run/docker.sock
+            command: open -a Docker && sleep 10
+          - check: pg_isready -h localhost
+            command: docker start postgres
+```
+
+Each requirement has a `check` command and a remediation `command`:
+- **check**: Runs first. If exit code is 0, the requirement is met — skip to next
+- **command**: Runs if check fails. If remediation also fails, the service start is aborted
+
+Requirements are evaluated in order before the service starts. The same check command is only remediated once per `rig` invocation, even if multiple services share the same requirement. Requirements do not apply to tasks.
 
 ### Multi-File Config
 

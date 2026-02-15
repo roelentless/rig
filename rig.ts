@@ -45,6 +45,11 @@ interface TaskDef {
   description?: string;
 }
 
+interface RequirementDef {
+  check: string;
+  command: string;
+}
+
 interface ServiceDef {
   command: string;
   working_dir: string;
@@ -55,6 +60,7 @@ interface ServiceDef {
   healthcheck?: HealthCheck;
   tasks?: Record<string, TaskDef>;         // Service-level tasks
   watch?: WatchDef;                        // Auto-restart via watchexec
+  requirements?: RequirementDef[];         // Pre-start checks with remediation
 }
 
 interface GroupDef {
@@ -195,11 +201,12 @@ class ConfigError extends Error {
 const SCHEMA = {
   root: new Set(["imports", "groups"]),
   group: new Set(["services", "tasks"]),
-  service: new Set(["command", "working_dir", "environment", "env_file", "color", "depends_on", "healthcheck", "tasks", "watch"]),
+  service: new Set(["command", "working_dir", "environment", "env_file", "color", "depends_on", "healthcheck", "tasks", "watch", "requirements"]),
   task: new Set(["command", "working_dir", "environment", "env_file", "description"]),
   watch: new Set(["paths", "extensions", "patterns", "ignore", "debounce"]),
   healthcheck: new Set(["grace_ms"]),
   envFileEntry: new Set(["path", "required"]),
+  requirement: new Set(["check", "command"]),
 };
 
 /**
@@ -262,6 +269,15 @@ function validateConfigSchema(raw: Record<string, unknown>, configPath: string):
             for (const entry of s.env_file) {
               if (entry && typeof entry === "object") {
                 errors.push(...validateKeys(entry as Record<string, unknown>, SCHEMA.envFileEntry, `env_file entry in service '${groupName}.${serviceName}'`, configPath));
+              }
+            }
+          }
+
+          // Validate requirements entries
+          if (s.requirements && Array.isArray(s.requirements)) {
+            for (const entry of s.requirements) {
+              if (entry && typeof entry === "object") {
+                errors.push(...validateKeys(entry as Record<string, unknown>, SCHEMA.requirement, `requirement in service '${groupName}.${serviceName}'`, configPath));
               }
             }
           }
@@ -956,6 +972,25 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
             }
           }
 
+          // Parse requirements
+          let requirements: RequirementDef[] | undefined;
+          if (d.requirements && Array.isArray(d.requirements)) {
+            requirements = [];
+            for (const entry of d.requirements as unknown[]) {
+              if (!entry || typeof entry !== "object") {
+                throw new ConfigError(`Invalid requirement entry in service '${groupName}.${name}' (${configPath}): must be an object with 'check' and 'command'`);
+              }
+              const r = entry as Record<string, unknown>;
+              if (!r.check || typeof r.check !== "string") {
+                throw new ConfigError(`Requirement in service '${groupName}.${name}' (${configPath}) must have a 'check' string`);
+              }
+              if (!r.command || typeof r.command !== "string") {
+                throw new ConfigError(`Requirement in service '${groupName}.${name}' (${configPath}) must have a 'command' string`);
+              }
+              requirements.push({ check: r.check, command: r.command });
+            }
+          }
+
           services[name] = {
             command: d.command as string,
             working_dir,
@@ -965,6 +1000,7 @@ async function loadConfigRecursive(ctx: LoadContext): Promise<{ groups: Record<s
             healthcheck,
             tasks: serviceTasks,
             watch,
+            requirements,
           };
 
           seenServices.set(name, groupName);
@@ -1388,6 +1424,11 @@ class SessionManager {
       }
       // Dead session exists, kill it first
       await this.stop(service);
+    }
+
+    // Check requirements before starting
+    if (def.requirements?.length) {
+      await checkRequirements(service, def.requirements, def.working_dir, def.environment);
     }
 
     // Check for watchexec if watch is configured
@@ -2493,7 +2534,7 @@ function cmdConfig(
     return;
   }
 
-  const skip = new Set(["command", "color", "tasks", "watch"]);
+  const skip = new Set(["command", "color", "tasks", "watch", "requirements"]);
   const cwd = Deno.cwd();
 
   for (const target of targets) {
@@ -2532,6 +2573,75 @@ async function commandExists(cmd: string): Promise<boolean> {
     return code === 0;
   } catch {
     return false;
+  }
+}
+
+// Track which check commands have already been remediated in this invocation
+const remediatedChecks = new Set<string>();
+
+/**
+ * Run pre-start requirement checks for a service.
+ * Each requirement has a `check` command (must exit 0) and a `command` (remediation).
+ * If the check fails and hasn't been remediated yet, run the remediation command.
+ * If remediation fails, throw to abort service start.
+ */
+async function checkRequirements(
+  service: string,
+  requirements: RequirementDef[],
+  working_dir: string,
+  environment?: Record<string, string>,
+): Promise<void> {
+  const env = environment ? { ...Deno.env.toObject(), ...environment } : undefined;
+
+  for (const req of requirements) {
+    // Run the check command
+    const check = new Deno.Command("sh", {
+      args: ["-c", req.check],
+      cwd: working_dir,
+      env,
+      stdout: "null",
+      stderr: "null",
+    });
+    const checkResult = await check.output();
+
+    if (checkResult.code === 0) {
+      continue; // Requirement already met
+    }
+
+    // Check failed - if already remediated, re-run check only
+    if (remediatedChecks.has(req.check)) {
+      // Already ran remediation for this check in another service
+      // Re-check in case it now passes
+      const recheck = new Deno.Command("sh", {
+        args: ["-c", req.check],
+        cwd: working_dir,
+        env,
+        stdout: "null",
+        stderr: "null",
+      });
+      const recheckResult = await recheck.output();
+      if (recheckResult.code === 0) {
+        continue;
+      }
+      throw new Error(`Requirement check failed for ${service}: '${req.check}' (already remediated, still failing)`);
+    }
+
+    // Run remediation
+    logSystem(`${service}: requirement '${req.check}' not met, running '${req.command}'`);
+    const remediate = new Deno.Command("sh", {
+      args: ["-c", req.command],
+      cwd: working_dir,
+      env,
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const remediateResult = await remediate.output();
+
+    if (remediateResult.code !== 0) {
+      throw new Error(`Requirement remediation failed for ${service}: '${req.command}' exited with code ${remediateResult.code}`);
+    }
+
+    remediatedChecks.add(req.check);
   }
 }
 

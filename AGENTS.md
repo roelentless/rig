@@ -66,6 +66,17 @@
 - Check watchexec installed before starting service (`requireWatchexec()`)
 - All runtime dependency errors (tmux, fd, watchexec) point to the installer URL as first option
 
+### Requirements (pre-start checks)
+
+- Services can declare `requirements` — check/command pairs evaluated before start
+- Each requirement runs a `check` command (exit 0 = met). If check fails, runs `command` (remediation)
+- If remediation fails (non-zero exit), service start is aborted with an error
+- Module-level `remediatedChecks` Set deduplicates remediation across services in one `rig` invocation
+- Check commands run with `stdout/stderr: "null"` (only exit code matters)
+- Remediation commands run with `stdout/stderr: "inherit"` (user sees output)
+- Commands run in the service's `working_dir` with its `environment`
+- Requirements do not apply to tasks
+
 ### Config Display
 
 - Simple text output (`rig config`) skips complex nested fields (`tasks`, `watch`) to avoid `[object Object]` serialization

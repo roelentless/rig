@@ -1390,6 +1390,148 @@ Deno.test({
   },
 });
 
+// ============================================================================
+// REQUIREMENTS TESTS
+// ============================================================================
+
+Deno.test({
+  name: `[${PLATFORM}] requirements - check passes, skips remediation`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    const config = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      req-pass:
+        command: sh -c "echo 'started'; sleep 30"
+        working_dir: /tmp
+        requirements:
+          - check: "true"
+            command: "echo 'should not run' > /tmp/rig-req-test-marker"
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    // Clean up marker file if it exists
+    await Deno.remove("/tmp/rig-req-test-marker").catch(() => {});
+
+    try {
+      const { code, stdout } = await rig(["start", "-d", "req-pass"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started req-pass");
+
+      // Remediation should NOT have run
+      let markerExists = false;
+      try {
+        await Deno.stat("/tmp/rig-req-test-marker");
+        markerExists = true;
+      } catch { /* not found, expected */ }
+      assertEquals(markerExists, false, "Remediation should not have run when check passes");
+    } finally {
+      await teardown();
+      await Deno.remove("/tmp/rig-req-test-marker").catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] requirements - check fails, remediation runs`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    // Clean up marker
+    await Deno.remove("/tmp/rig-req-remediated").catch(() => {});
+
+    const config = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      req-fix:
+        command: sh -c "echo 'started'; sleep 30"
+        working_dir: /tmp
+        requirements:
+          - check: test -f /tmp/rig-req-remediated
+            command: touch /tmp/rig-req-remediated
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    try {
+      const { code, stdout } = await rig(["start", "-d", "req-fix"]);
+      assertEquals(code, 0);
+      assertStringIncludes(stdout, "Started req-fix");
+
+      // Remediation should have created the marker
+      const stat = await Deno.stat("/tmp/rig-req-remediated");
+      assertEquals(stat.isFile, true, "Remediation should have created marker file");
+    } finally {
+      await teardown();
+      await Deno.remove("/tmp/rig-req-remediated").catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] requirements - remediation failure aborts service start`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    const config = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      req-fail:
+        command: sh -c "echo 'started'; sleep 30"
+        working_dir: /tmp
+        requirements:
+          - check: "false"
+            command: "exit 1"
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    try {
+      const { code, stderr } = await rig(["start", "-d", "req-fail"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Requirement remediation failed");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
+Deno.test({
+  name: `[${PLATFORM}] requirements - schema validation catches unknown keys`,
+  async fn() {
+    const testTmpDir = getTestTmpDir();
+    await ensureTestTmpDir();
+
+    const config = `
+groups:
+  ${TEST_GROUP}:
+    services:
+      req-bad:
+        command: echo hello
+        working_dir: /tmp
+        requirements:
+          - check: "true"
+            command: "true"
+            timeout: 30
+`;
+    await Deno.writeTextFile(`${testTmpDir}/rig.yaml`, config);
+
+    try {
+      const { code, stderr } = await rig(["start", "-d"]);
+      assertEquals(code, 1);
+      assertStringIncludes(stderr, "Unknown key 'timeout'");
+      assertStringIncludes(stderr, "requirement");
+    } finally {
+      await teardown();
+    }
+  },
+});
+
 // Final cleanup
 Deno.test({
   name: `[${PLATFORM}] cleanup`,
