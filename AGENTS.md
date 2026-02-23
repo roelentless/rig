@@ -143,16 +143,16 @@ Key rules:
 ## Code Structure
 
 ```
-rig.ts:
-  Types & Interfaces     → Data shapes (Config, GroupDef, ServiceDef, ResolvedService)
-  Constants              → Colors, config names
-  Utilities              → log(), buildEnvString()
-  Process Metrics        → getProcessTree(), getProcessMetrics()
-  Tmux Check             → checkTmux(), printTmuxInstallGuide()
-  Config                 → loadConfig(), buildServiceLookup(), resolveTargets()
-  SessionManager         → Class managing tmux sessions (one per group)
-  Commands               → cmdStart(), cmdStop(), cmdPs(), cmdTop(), etc.
-  CLI                    → main(), printUsage()
+rig.ts          → Entry point: CLI parsing and command dispatch
+lib/
+  output.ts     → Terminal output: colors, logging, display helpers
+  config.ts     → Types, schema validation, config loading/parsing/querying
+  process.ts    → SessionManager, process tree/metrics, tmux checks, log streaming
+  commands.ts   → CLI command implementations (start/stop/ps/top/logs/tasks/discover)
+  version.ts    → Version constant
+
+Import graph (strict DAG):
+  output ← config ← process ← commands ← rig
 
 install.sh:
   Platform detection     → OS, arch, distro, package manager
