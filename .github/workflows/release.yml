@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux procps lsof fd-find
+          sudo ln -sf /usr/bin/fdfind /usr/bin/fd
+          ARCH=$(dpkg --print-architecture)
+          if [ "$ARCH" = "amd64" ]; then WE_ARCH="x86_64"; else WE_ARCH="aarch64"; fi
+          curl -fsSL -o /tmp/watchexec.deb "https://github.com/watchexec/watchexec/releases/download/v2.2.1/watchexec-2.2.1-${WE_ARCH}-unknown-linux-gnu.deb"
+          sudo dpkg -i /tmp/watchexec.deb
+
+      - name: Run tests
+        run: cargo test -- --test-threads=1
+
+      - name: Clippy
+        run: cargo clippy -- -W clippy::all
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux
+            arch: amd64
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            platform: linux
+            arch: arm64
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            platform: macos
+            arch: amd64
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            platform: macos
+            arch: arm64
+            use_cross: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Update version from tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/rig dist/rig
+          cd dist
+          tar czf rig-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz rig
+          rm rig
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rig-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/rig-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*/rig-*.tar.gz

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Dev wrapper - builds and runs rig from the current directory
+# Link system-wide: ln -sf "$(pwd)/rig-dev" /usr/local/bin/rig
+# Or user-local:    ln -sf "$(pwd)/rig-dev" ~/.local/bin/rig
+#
+# The binary runs from YOUR current directory (finding your rig.yaml),
+# but builds from the rig-rust source directory.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+cargo build --quiet --manifest-path "$SCRIPT_DIR/Cargo.toml" && "$SCRIPT_DIR/target/debug/rig" "$@"

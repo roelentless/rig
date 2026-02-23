@@ -51,45 +51,43 @@ Smoother dev workflow when working with many services, apps, and commands - with
 
 ## Install
 
-**Install or upgrade** (macOS, Debian/Ubuntu, Fedora, Arch):
+**Install or upgrade** (macOS, Linux):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
 ```
 
-Checks what's missing, shows the install plan, asks before running anything. Safe to re-run for upgrades.
-
+Downloads a prebuilt binary from GitHub Releases. Checks prerequisites, shows the plan, asks before running. Safe to re-run for upgrades.
 
 ### Manual install
 
-**Prerequisites:** deno (2.5+), tmux, fd, watchexec
+**Prerequisites:** tmux (required), fd (optional, for `rig discover`), watchexec (optional, for file watching)
 
 ```bash
 # macOS
-brew install tmux deno fd watchexec
+brew install tmux
 
 # Linux (Debian/Ubuntu)
-sudo apt install tmux fd-find
-curl -fsSL https://deno.land/install.sh | sh
-# watchexec: install .deb from https://github.com/watchexec/watchexec/releases
+sudo apt install tmux
 
 # Linux (Fedora)
-sudo dnf install tmux fd-find
-curl -fsSL https://deno.land/install.sh | sh
-# watchexec: install .rpm from https://github.com/watchexec/watchexec/releases
+sudo dnf install tmux
 
 # Linux (Arch)
-sudo pacman -S tmux fd watchexec
-curl -fsSL https://deno.land/install.sh | sh
+sudo pacman -S tmux
 ```
 
-**Install or upgrade rig:**
+**Download the binary** from [GitHub Releases](https://github.com/roelentless/rig/releases) and place it in your PATH:
 
 ```bash
-deno install -Agf -n rig --reload=https://jsr.io/@roelentless/rig jsr:@roelentless/rig
-```
+# Example for Linux amd64:
+curl -fsSL https://github.com/roelentless/rig/releases/latest/download/rig-linux-amd64.tar.gz | tar xz
+mv rig ~/.local/bin/
 
-Ensure `~/.deno/bin` is in your PATH.
+# Example for macOS arm64:
+curl -fsSL https://github.com/roelentless/rig/releases/latest/download/rig-macos-arm64.tar.gz | tar xz
+mv rig /usr/local/bin/
+```
 
 ## Configuration
 
@@ -400,7 +398,9 @@ Rig automatically adds `.rig/` to your `.gitignore`.
 ## Uninstall
 
 ```bash
-deno uninstall -g rig
+# Check the path first, then remove
+which rig        # e.g. /usr/local/bin/rig
+rm /usr/local/bin/rig
 ```
 
 ## How it works

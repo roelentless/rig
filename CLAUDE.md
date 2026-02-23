@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This is a Rust project using Cargo. Build with `cargo build`, test with `cargo test -- --test-threads=1`.
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.

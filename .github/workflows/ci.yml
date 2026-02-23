@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux procps lsof fd-find
+          sudo ln -sf /usr/bin/fdfind /usr/bin/fd
+          ARCH=$(dpkg --print-architecture)
+          if [ "$ARCH" = "amd64" ]; then WE_ARCH="x86_64"; else WE_ARCH="aarch64"; fi
+          curl -fsSL -o /tmp/watchexec.deb "https://github.com/watchexec/watchexec/releases/download/v2.2.1/watchexec-2.2.1-${WE_ARCH}-unknown-linux-gnu.deb"
+          sudo dpkg -i /tmp/watchexec.deb
+
+      - name: Run tests
+        run: cargo test -- --test-threads=1
+
+      - name: Clippy
+        run: cargo clippy -- -W clippy::all
+
+      - name: Check formatting
+        run: cargo fmt --check

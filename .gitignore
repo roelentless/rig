@@ -1,4 +1,5 @@
 .DS_Store
+/target
 assets/rig-orig.png
 rig.yaml
 rig.yml

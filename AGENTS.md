@@ -37,25 +37,21 @@
 
 ### CLI
 
-- Use `@std/cli/parse-args` for flag parsing
-- Don't use `stopEarly: true` if flags can appear after the command
+- Uses clap with derive macros for argument parsing
+- Custom help text (not clap's auto-generated help)
 
 ### Installer (`install.sh`)
 
 - POSIX `sh` only, no bashisms — the script is piped via `curl | sh`
-- All dependencies are **required**: deno (2.5+), tmux, fd, watchexec
-- Transparency pattern: check deps → show plan with commands → ask user → execute
-- Nested-pipe issue: downloading deno installer inside a piped script needs temp file (`mktemp`), not `curl | sh` within `curl | sh`
+- Downloads prebuilt binary from GitHub Releases (`rig-{platform}-{arch}.tar.gz`)
+- tmux is **required** (hard error if missing, no auto-install)
+- fd and watchexec are **optional** (noted as skip, not error)
+- Transparency pattern: check deps → show plan → ask user → download binary
 - Read user input when stdin is a pipe: redirect from `/dev/tty`
-- `maybe_sudo` pattern: check `id -u` for root, fallback to `sudo`
-- `deno upgrade` for existing-but-outdated deno; check if binary is writable (`[ -w "$path" ]`) to decide sudo
-- After install, tell user to `source ~/.bashrc` (or equivalent) — shell profile changes don't affect the current session
-- Deno PATH: `~/.deno/bin` is where `deno install -g` puts binaries regardless of how deno itself was installed
-- watchexec packages: brew (macOS), .deb from GitHub (Debian), .rpm from GitHub (Fedora), pacman (Arch). See [watchexec packages.md](https://github.com/watchexec/watchexec/blob/main/doc/packages.md)
-- fd packages: brew (macOS), `fd-find` (Debian/Fedora), `fd` (Arch). Debian installs as `fdfind` — needs symlink to `/usr/local/bin/fd`
-- Supported platforms: macOS (arm64, x86_64), Debian/Ubuntu, Fedora/RHEL, Arch/Manjaro. Reject unsupported with README link
-- Test with `docker run` on clean base images (debian:bookworm, fedora:41) to validate full install from scratch
-- The installer doubles as upgrader — safe to re-run. When all deps are satisfied, it just upgrades rig
+- Install location: `~/.local/bin` on Linux, `/usr/local/bin` on macOS
+- Version check: skips download if already up to date
+- The installer doubles as upgrader — safe to re-run
+- Supported platforms: macOS (arm64, x86_64), Linux (amd64, arm64)
 
 ### Watch (auto-restart)
 
@@ -143,23 +139,22 @@ Key rules:
 ## Code Structure
 
 ```
-rig.ts          → Entry point: CLI parsing and command dispatch
-lib/
-  output.ts     → Terminal output: colors, logging, display helpers
-  config.ts     → Types, schema validation, config loading/parsing/querying
-  process.ts    → SessionManager, process tree/metrics, tmux checks, log streaming
-  commands.ts   → CLI command implementations (start/stop/ps/top/logs/tasks/discover)
-  version.ts    → Version constant
+src/
+  main.rs       → Entry point: CLI parsing (clap derive) and command dispatch
+  lib.rs        → Library root, re-exports modules
+  output.rs     → Terminal output: colors, logging, display helpers
+  config.rs     → Types, schema validation, config loading/parsing/querying
+  process.rs    → SessionManager, process tree/metrics, tmux checks, log streaming
+  commands.rs   → CLI command implementations (start/stop/ps/top/logs/tasks/discover)
 
-Import graph (strict DAG):
-  output ← config ← process ← commands ← rig
+Module dependency graph (strict DAG):
+  output ← config ← process ← commands ← main
 
 install.sh:
-  Platform detection     → OS, arch, distro, package manager
-  Dependency check       → deno version check, has() for each tool
-  Plan display           → show_status(), show_plan() with commands + descriptions
-  Install functions      → install_deno(), upgrade_deno(), install_tmux(), etc.
-  PATH verification      → verify shell profiles contain ~/.deno/bin
+  Platform detection     → OS, arch
+  Dependency check       → tmux (required), fd/watchexec (optional)
+  Binary download        → GitHub Releases tarball
+  PATH verification      → check install dir is in PATH
 ```
 
 ## Common Pitfalls
@@ -176,40 +171,44 @@ install.sh:
 
 ## Local Development
 
-Developers should set up local development as described in [CONTRIBUTING.md](CONTRIBUTING.md). Once set up, you can test changes locally without reinstalling.
+Developers should set up local development as described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The installed `rig` command is a wrapper script that runs:
+Build and run from source:
 ```sh
-exec deno run --allow-all --no-config 'file:///path/to/rig/rig.ts' "$@"
+cargo build                    # Build debug binary
+cargo install --path .         # Install to ~/.cargo/bin
+./rig-dev ps                   # Build + run in one step (dev wrapper)
 ```
+
+The `rig-dev` script builds from the source tree and runs the debug binary, so your working directory's `rig.yaml` is used while the binary comes from the source checkout.
 
 ## Documentation
 
 **Keep README.md in sync with command output**: When modifying commands or their output, always run `rig -h` and update the Commands section in README.md to match the exact output. The README should reflect what users see when they run the help command.
 
-**Keep install.sh in sync with dependencies**: When adding new runtime dependencies, update `install.sh` (detection, plan display, install function), the README install section, and the error messages in `rig.ts` that guide users when a tool is missing.
+**Keep install.sh in sync with dependencies**: When adding new runtime dependencies, update `install.sh` (detection, plan display), the README install section, and the error messages in `src/main.rs` that guide users when a tool is missing.
 
 ## Testing
 
-Tests use a single unified test file that runs on both macOS and Linux.
+Tests are end-to-end Rust integration tests that spawn the rig binary and interact with tmux.
 
 ### Quick feedback loop
 
-During development, test locally on your platform:
+During development, test locally:
 
 ```sh
-deno task test
+cargo test -- --test-threads=1
 ```
 
-This runs the full test suite on your current platform and is sufficient for rapid iteration.
+Tests must run single-threaded because they share tmux state.
 
 ### Validate all platforms after task completion
 
-After completing any task, **always** validate on Linux via Docker to ensure cross-platform compatibility:
+After completing any task, **always** validate on Linux via Docker:
 
 ```sh
-deno task test         # Fast local validation
-deno task test:docker  # Slower Docker validation (~15-20s)
+cargo test -- --test-threads=1                                        # Local
+docker build -f test/Dockerfile -t rig-test . && docker run --rm rig-test  # Docker
 ```
 
 Both must pass before considering the task complete.
@@ -217,14 +216,22 @@ Both must pass before considering the task complete.
 ### Test structure
 
 ```
+tests/
+  common/mod.rs       # TestContext: temp dirs, rig binary, tmux helpers, cleanup
+  e2e_help.rs         # Help/version output tests
+  e2e_tasks.rs        # Task execution tests
+  e2e_env.rs          # Environment variable tests
+  e2e_deps.rs         # depends_on tests
+  e2e_watch.rs        # File watching tests
+  e2e_services.rs     # Service lifecycle tests
+  e2e_multifile.rs    # Multi-file config tests
+  e2e_requirements.rs # Pre-start requirement tests
+  e2e_schema.rs       # Config validation tests
 test/
-  _helpers.ts     # Shared utilities (rig runner, tmux helpers, config)
-  rig.test.ts     # Unified tests (run on both macOS and Linux)
-  Dockerfile      # Linux test environment for Docker
-  tmp/            # Test artifacts (gitignored) - rig.yaml, .env files, etc.
+  Dockerfile          # Linux test environment for Docker
 ```
 
-Tests automatically detect the platform via `Deno.build.os` and prefix test names accordingly.
+Each test file uses `TestContext` from `common/mod.rs` which handles temp directory creation, writing test configs, running the rig binary, and tmux session cleanup.
 
 ## Future Considerations
 

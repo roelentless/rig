@@ -2,14 +2,12 @@
 # rig installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh
 #
-# Checks what's missing, shows the install plan, asks before running.
-# Pass -y to skip the prompt.
+# Downloads a prebuilt binary from GitHub Releases.
+# Checks prerequisites, shows the install plan, asks before running.
+# Safe to re-run for upgrades. Pass -y to skip the prompt.
 
-REPO_URL="https://github.com/roelentless/rig"
-RIG_PACKAGE="jsr:@roelentless/rig"
-WATCHEXEC_VERSION="2.2.1"
-DENO_MIN_MAJOR=2
-DENO_MIN_MINOR=5
+REPO="roelentless/rig"
+REPO_URL="https://github.com/${REPO}"
 
 # --- Colors (only when terminal) ---
 
@@ -34,9 +32,6 @@ err()  { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; }
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
-# Show a command + description in the install plan
-plan() { printf "    ${DIM}$%s ${RESET}%-40s %s\n" "$1" "$2" "$3"; }
-
 # Prompt Y/n - reads from /dev/tty when stdin is a pipe
 prompt_yn() {
   if [ "${AUTO_YES}" = true ]; then return 0; fi
@@ -53,23 +48,6 @@ prompt_yn() {
     n|N|no|No) return 1 ;;
     *) return 0 ;;
   esac
-}
-
-maybe_sudo() {
-  if [ "$(id -u)" -eq 0 ]; then
-    "$@"
-  elif has sudo; then
-    sudo "$@"
-  else
-    err "Root privileges required. Run as root or install sudo."
-    exit 1
-  fi
-}
-
-source_deno_env() {
-  DENO_INSTALL="${DENO_INSTALL:-$HOME/.deno}"
-  export DENO_INSTALL
-  export PATH="$DENO_INSTALL/bin:$PATH"
 }
 
 # ============================================================================
@@ -92,8 +70,8 @@ detect_platform() {
   esac
 
   case "$ARCH" in
-    x86_64|amd64)  ARCH="x86_64" ;;
-    arm64|aarch64) ARCH="aarch64" ;;
+    x86_64|amd64)  ARCH_LABEL="amd64" ;;
+    arm64|aarch64) ARCH_LABEL="arm64" ;;
     *)
       err "Unsupported architecture: $ARCH"
       err "See: ${REPO_URL}#install"
@@ -102,89 +80,47 @@ detect_platform() {
   esac
 }
 
-detect_distro() {
-  DISTRO=""
-  PKG_MANAGER=""
+# ============================================================================
+# Install location
+# ============================================================================
 
-  if [ "$PLATFORM" != "linux" ]; then return; fi
-
-  if [ ! -f /etc/os-release ]; then
-    err "Cannot detect Linux distribution (missing /etc/os-release)"
-    err "rig is tested on Debian/Ubuntu, Fedora, and Arch Linux."
-    err "See: ${REPO_URL}#install"
-    exit 1
-  fi
-
-  . /etc/os-release
-
-  case "$ID" in
-    ubuntu|debian|pop|linuxmint|elementary|kali)
-      DISTRO="debian"
-      PKG_MANAGER="apt"
-      ;;
-    fedora|rhel|centos|rocky|alma)
-      DISTRO="fedora"
-      PKG_MANAGER="dnf"
-      ;;
-    arch|manjaro|endeavouros)
-      DISTRO="arch"
-      PKG_MANAGER="pacman"
-      ;;
-    *)
-      err "Unsupported Linux distribution: ${ID:-unknown}"
-      err "rig is tested on macOS, Debian/Ubuntu, Fedora, and Arch Linux."
-      err "See: ${REPO_URL}#install"
-      exit 1
-      ;;
+install_dir() {
+  case "$PLATFORM" in
+    linux) echo "$HOME/.local/bin" ;;
+    macos) echo "/usr/local/bin" ;;
   esac
+}
+
+# ============================================================================
+# Version check
+# ============================================================================
+
+get_latest_version() {
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+}
+
+get_installed_version() {
+  if has rig; then
+    rig version 2>/dev/null | head -1 | sed 's/[^0-9.]*//'
+  fi
 }
 
 # ============================================================================
 # Dependency check
 # ============================================================================
 
-# Parse deno version string, check >= DENO_MIN_MAJOR.DENO_MIN_MINOR
-deno_version_ok() {
-  VER=$(deno -v 2>/dev/null | head -1 | sed 's/deno //')
-  MAJOR=$(echo "$VER" | cut -d. -f1)
-  MINOR=$(echo "$VER" | cut -d. -f2)
-  if [ "$MAJOR" -gt "$DENO_MIN_MAJOR" ] 2>/dev/null; then return 0; fi
-  if [ "$MAJOR" -eq "$DENO_MIN_MAJOR" ] && [ "$MINOR" -ge "$DENO_MIN_MINOR" ] 2>/dev/null; then return 0; fi
-  return 1
-}
-
-# Check if deno binary needs sudo to upgrade (not writable by current user)
-deno_upgrade_needs_sudo() {
-  DENO_PATH=$(command -v deno 2>/dev/null)
-  [ -n "$DENO_PATH" ] && [ ! -w "$DENO_PATH" ]
-}
-
 check_deps() {
-  HAS_DENO=false; DENO_OUTDATED=false
-  HAS_TMUX=false; HAS_FD=false; HAS_WATCHEXEC=false
+  HAS_TMUX=false; HAS_FD=false; HAS_WATCHEXEC=false; HAS_RIG=false
 
-  if has deno; then
-    if deno_version_ok; then
-      HAS_DENO=true
-    else
-      DENO_OUTDATED=true
-    fi
-  fi
   has tmux                      && HAS_TMUX=true
   { has fd || has fdfind; }     && HAS_FD=true
   has watchexec                 && HAS_WATCHEXEC=true
+  has rig                       && HAS_RIG=true
 }
 
 show_status() {
   printf "\n  Checking dependencies...\n\n"
-
-  if $HAS_DENO; then
-    ok "deno $(deno -v 2>/dev/null | head -1)"
-  elif $DENO_OUTDATED; then
-    miss "deno $(deno -v 2>/dev/null | head -1)" "(requires ${DENO_MIN_MAJOR}.${DENO_MIN_MINOR}+)"
-  else
-    miss "deno" "(required) JS/TS runtime"
-  fi
 
   if $HAS_TMUX; then
     ok "$(tmux -V 2>/dev/null || echo tmux)"
@@ -195,240 +131,79 @@ show_status() {
   if $HAS_FD; then
     ok "fd"
   else
-    miss "fd" "(required) fast file finder"
+    skip "fd" "(optional) fast file finder for discover"
   fi
 
   if $HAS_WATCHEXEC; then
     ok "watchexec"
   else
-    miss "watchexec" "(required) file watcher"
+    skip "watchexec" "(optional) file watcher for auto-restart"
   fi
 }
 
 # ============================================================================
-# Install plan display
+# Install
 # ============================================================================
-
-# Build the sudo prefix once
-sudo_pfx() {
-  if [ "$PLATFORM" = "linux" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "sudo "
-  fi
-}
-
-show_plan() {
-  S=$(sudo_pfx)
-  HAS_PLAN=false
-
-  printf "\n  ${BOLD}Install plan:${RESET}\n\n"
-
-  # --- deno ---
-  if $DENO_OUTDATED; then
-    HAS_PLAN=true
-    if deno_upgrade_needs_sudo; then
-      plan " " "sudo deno upgrade" "Upgrade to deno ${DENO_MIN_MAJOR}.${DENO_MIN_MINOR}+"
-    else
-      plan " " "deno upgrade" "Upgrade to deno ${DENO_MIN_MAJOR}.${DENO_MIN_MINOR}+"
-    fi
-  elif ! $HAS_DENO; then
-    HAS_PLAN=true
-    plan " " "curl -fsSL https://deno.land/install.sh | sh" "JS/TS runtime"
-  fi
-
-  # --- tmux ---
-  if ! $HAS_TMUX; then
-    HAS_PLAN=true
-    case "$PLATFORM" in
-      macos) plan " " "brew install tmux" "Terminal multiplexer" ;;
-      linux)
-        case "$PKG_MANAGER" in
-          apt)    plan " " "${S}apt-get install -y tmux" "Terminal multiplexer" ;;
-          dnf)    plan " " "${S}dnf install -y tmux" "Terminal multiplexer" ;;
-          pacman) plan " " "${S}pacman -S --noconfirm tmux" "Terminal multiplexer" ;;
-        esac ;;
-    esac
-  fi
-
-  # --- fd ---
-  if ! $HAS_FD; then
-    HAS_PLAN=true
-    case "$PLATFORM" in
-      macos) plan " " "brew install fd" "Fast file finder" ;;
-      linux)
-        case "$PKG_MANAGER" in
-          apt)    plan " " "${S}apt-get install -y fd-find" "Fast file finder" ;;
-          dnf)    plan " " "${S}dnf install -y fd-find" "Fast file finder" ;;
-          pacman) plan " " "${S}pacman -S --noconfirm fd" "Fast file finder" ;;
-        esac ;;
-    esac
-  fi
-
-  # --- watchexec (see github.com/watchexec/watchexec/blob/main/doc/packages.md) ---
-  if ! $HAS_WATCHEXEC; then
-    HAS_PLAN=true
-    case "$PLATFORM" in
-      macos) plan " " "brew install watchexec" "File watcher for auto-restart" ;;
-      linux)
-        case "$PKG_MANAGER" in
-          apt)    plan " " "watchexec v${WATCHEXEC_VERSION} .deb from GitHub" "File watcher for auto-restart" ;;
-          dnf)    plan " " "watchexec v${WATCHEXEC_VERSION} .rpm from GitHub" "File watcher for auto-restart" ;;
-          pacman) plan " " "${S}pacman -S --noconfirm watchexec" "File watcher for auto-restart" ;;
-        esac ;;
-    esac
-  fi
-
-  # --- rig ---
-  HAS_PLAN=true
-  plan " " "deno install -Agf -n rig ${RIG_PACKAGE}" "rig CLI"
-
-  echo ""
-
-  if [ -n "$S" ]; then
-    warn "Some commands require sudo"
-    echo ""
-  fi
-}
-
-# ============================================================================
-# Install functions
-# ============================================================================
-
-upgrade_deno() {
-  info "Upgrading deno..."
-  if deno_upgrade_needs_sudo; then
-    maybe_sudo deno upgrade
-  else
-    deno upgrade
-  fi
-
-  if deno_version_ok; then
-    ok "deno upgraded to $(deno -v 2>/dev/null | head -1 | sed 's/deno //')"
-  else
-    err "deno upgrade failed"
-    exit 1
-  fi
-}
-
-install_deno() {
-  info "Installing deno..."
-
-  # Ensure unzip is available (required by deno installer)
-  if ! has unzip; then
-    case "$PLATFORM" in
-      linux)
-        case "$PKG_MANAGER" in
-          apt)    maybe_sudo apt-get update -qq && maybe_sudo apt-get install -y -qq unzip ;;
-          dnf)    maybe_sudo dnf install -y -q unzip ;;
-          pacman) maybe_sudo pacman -S --noconfirm unzip ;;
-        esac ;;
-    esac
-  fi
-
-  # Download and run non-interactively (temp file avoids nested-pipe issues)
-  DENO_INSTALLER=$(mktemp)
-  curl -fsSL https://deno.land/install.sh -o "$DENO_INSTALLER"
-  sh "$DENO_INSTALLER" -y
-  rm -f "$DENO_INSTALLER"
-
-  source_deno_env
-
-  if ! has deno; then
-    err "deno installation failed"
-    exit 1
-  fi
-  ok "deno installed"
-}
-
-install_tmux() {
-  info "Installing tmux..."
-  case "$PLATFORM" in
-    macos) brew install tmux ;;
-    linux)
-      case "$PKG_MANAGER" in
-        apt)    maybe_sudo apt-get update -qq && maybe_sudo apt-get install -y -qq tmux ;;
-        dnf)    maybe_sudo dnf install -y -q tmux ;;
-        pacman) maybe_sudo pacman -S --noconfirm tmux ;;
-      esac ;;
-  esac
-
-  if ! has tmux; then
-    err "tmux installation failed"
-    exit 1
-  fi
-  ok "tmux installed"
-}
-
-install_fd() {
-  info "Installing fd..."
-  case "$PLATFORM" in
-    macos) brew install fd ;;
-    linux)
-      case "$PKG_MANAGER" in
-        apt)
-          maybe_sudo apt-get install -y -qq fd-find
-          if has fdfind && ! has fd; then
-            maybe_sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd 2>/dev/null || true
-          fi
-          ;;
-        dnf)    maybe_sudo dnf install -y -q fd-find ;;
-        pacman) maybe_sudo pacman -S --noconfirm fd ;;
-      esac ;;
-  esac
-  if has fd || has fdfind; then
-    ok "fd installed"
-  else
-    err "fd installation failed"
-    exit 1
-  fi
-}
-
-install_watchexec() {
-  info "Installing watchexec..."
-
-  if [ "$ARCH" = "x86_64" ]; then WE_ARCH="x86_64"; else WE_ARCH="aarch64"; fi
-
-  case "$PLATFORM" in
-    macos) brew install watchexec ;;
-    linux)
-      case "$PKG_MANAGER" in
-        apt)
-          WE_URL="https://github.com/watchexec/watchexec/releases/download/v${WATCHEXEC_VERSION}/watchexec-${WATCHEXEC_VERSION}-${WE_ARCH}-unknown-linux-gnu.deb"
-          WE_TMP=$(mktemp)
-          curl -fsSL -o "$WE_TMP" "$WE_URL"
-          maybe_sudo dpkg -i "$WE_TMP"
-          rm -f "$WE_TMP"
-          ;;
-        dnf)
-          WE_URL="https://github.com/watchexec/watchexec/releases/download/v${WATCHEXEC_VERSION}/watchexec-${WATCHEXEC_VERSION}-${WE_ARCH}-unknown-linux-gnu.rpm"
-          WE_TMP=$(mktemp)
-          curl -fsSL -o "$WE_TMP" "$WE_URL"
-          maybe_sudo rpm -i "$WE_TMP"
-          rm -f "$WE_TMP"
-          ;;
-        pacman) maybe_sudo pacman -S --noconfirm watchexec ;;
-      esac ;;
-  esac
-
-  if has watchexec; then
-    ok "watchexec installed"
-  else
-    err "watchexec installation failed"
-    exit 1
-  fi
-}
 
 install_rig() {
-  info "Installing rig..."
-  source_deno_env
-  deno install -Agf -n rig --reload="https://jsr.io/@roelentless/rig" "$RIG_PACKAGE"
+  DEST_DIR=$(install_dir)
+  DEST="$DEST_DIR/rig"
 
-  DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
-  if [ -f "$DENO_BIN/rig" ]; then
-    ok "rig installed"
-  else
-    err "rig installation failed"
+  LATEST=$(get_latest_version)
+  if [ -z "$LATEST" ]; then
+    err "Could not determine latest version from GitHub."
+    err "Check your network connection or visit: ${REPO_URL}/releases"
     exit 1
   fi
+
+  # Version check - skip if already up to date
+  if $HAS_RIG; then
+    CURRENT=$(get_installed_version)
+    if [ "$CURRENT" = "$LATEST" ]; then
+      printf "\n"
+      ok "rig ${CURRENT} is already up to date"
+      printf "\n"
+      exit 0
+    fi
+    info "Upgrading rig ${CURRENT} → ${LATEST}"
+  else
+    info "Installing rig ${LATEST}"
+  fi
+
+  TARBALL="rig-${PLATFORM}-${ARCH_LABEL}.tar.gz"
+  URL="${REPO_URL}/releases/download/${LATEST}/${TARBALL}"
+
+  info "Downloading ${URL}"
+  TMP_DIR=$(mktemp -d)
+  TMP_TAR="$TMP_DIR/$TARBALL"
+
+  if ! curl -fsSL -o "$TMP_TAR" "$URL"; then
+    rm -rf "$TMP_DIR"
+    err "Download failed: ${URL}"
+    err "Check if a release exists for your platform: ${REPO_URL}/releases"
+    exit 1
+  fi
+
+  tar xzf "$TMP_TAR" -C "$TMP_DIR"
+
+  # Ensure destination directory exists
+  mkdir -p "$DEST_DIR"
+
+  # Install binary (may need elevated privileges on macOS /usr/local/bin)
+  if [ -w "$DEST_DIR" ] || [ -w "$DEST" ] 2>/dev/null; then
+    mv "$TMP_DIR/rig" "$DEST"
+    chmod +x "$DEST"
+  elif has sudo; then
+    sudo mv "$TMP_DIR/rig" "$DEST"
+    sudo chmod +x "$DEST"
+  else
+    err "Cannot write to ${DEST_DIR}. Run as root or install sudo."
+    rm -rf "$TMP_DIR"
+    exit 1
+  fi
+
+  rm -rf "$TMP_DIR"
+  ok "rig ${LATEST} installed to ${DEST}"
 }
 
 # ============================================================================
@@ -436,35 +211,22 @@ install_rig() {
 # ============================================================================
 
 verify_path() {
-  DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
+  DEST_DIR=$(install_dir)
 
-  path_ok=false
-  for profile in \
-    "$HOME/.bashrc" "$HOME/.bash_profile" \
-    "$HOME/.zshrc" "$HOME/.zshenv" \
-    "$HOME/.profile" "$HOME/.deno/env"
-  do
-    if [ -f "$profile" ] && grep -q "\.deno" "$profile" 2>/dev/null; then
-      path_ok=true
-      break
-    fi
-  done
-
-  if $path_ok; then
-    ok "PATH includes ${DENO_BIN}"
-    return
-  fi
+  case ":$PATH:" in
+    *":$DEST_DIR:"*) return ;;
+  esac
 
   echo ""
-  warn "~/.deno/bin may not be in your PATH"
+  warn "${DEST_DIR} is not in your PATH"
   warn "Add to your shell profile:"
   echo ""
   CURRENT_SHELL=$(basename "${SHELL:-/bin/sh}")
   case "$CURRENT_SHELL" in
-    zsh)  printf "    echo 'export PATH=\"\$HOME/.deno/bin:\$PATH\"' >> ~/.zshrc\n" ;;
-    bash) printf "    echo 'export PATH=\"\$HOME/.deno/bin:\$PATH\"' >> ~/.bashrc\n" ;;
-    fish) printf "    fish_add_path ~/.deno/bin\n" ;;
-    *)    printf "    export PATH=\"\$HOME/.deno/bin:\$PATH\"\n" ;;
+    zsh)  printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.zshrc\n" "$DEST_DIR" ;;
+    bash) printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.bashrc\n" "$DEST_DIR" ;;
+    fish) printf "    fish_add_path %s\n" "$DEST_DIR" ;;
+    *)    printf "    export PATH=\"%s:\$PATH\"\n" "$DEST_DIR" ;;
   esac
 }
 
@@ -492,74 +254,49 @@ main() {
 
   # Platform
   detect_platform
-  detect_distro
-  printf "\n  Platform: ${PLATFORM}/${ARCH}${DISTRO:+ (${DISTRO})}\n"
+  printf "\n  Platform: ${PLATFORM}/${ARCH_LABEL}\n"
 
-  # macOS requires brew for system packages
-  if [ "$PLATFORM" = "macos" ] && ! has brew; then
-    echo ""
-    err "Homebrew is required on macOS for system packages."
-    err "Install from: https://brew.sh"
-    err "Then re-run this installer."
-    exit 1
-  fi
-
-  # Check
+  # Check dependencies
   check_deps
   show_status
 
-  # All deps present and up to date → just install/upgrade rig
-  if $HAS_DENO && ! $DENO_OUTDATED && $HAS_TMUX && $HAS_FD && $HAS_WATCHEXEC; then
-    printf "\n  All dependencies satisfied. Upgrading rig...\n"
+  # tmux is required - hard error
+  if ! $HAS_TMUX; then
     echo ""
-    install_rig
-    verify_path
-    printf "\n"
-    ok "Done!"
-    printf "\n"
-    return
+    err "tmux is required but not installed."
+    err "Install it first:"
+    case "$PLATFORM" in
+      macos) err "  brew install tmux" ;;
+      linux) err "  sudo apt install tmux  (Debian/Ubuntu)"
+             err "  sudo dnf install tmux  (Fedora)"
+             err "  sudo pacman -S tmux    (Arch)" ;;
+    esac
+    exit 1
   fi
 
-  # Show plan and ask
-  show_plan
+  # Show what we'll do
+  printf "\n  ${BOLD}Install plan:${RESET}\n\n"
+  DEST_DIR=$(install_dir)
+  printf "    Download prebuilt binary from GitHub Releases\n"
+  printf "    Install to ${DEST_DIR}/rig\n"
+  echo ""
 
   if ! prompt_yn "  Proceed? [Y/n] "; then
     echo ""
-    info "Aborted. Run the commands above manually, then:"
-    printf "    deno install -Agf -n rig %s\n" "$RIG_PACKAGE"
+    info "Aborted."
+    info "Manual download: ${REPO_URL}/releases"
     echo ""
     exit 0
   fi
-
-  echo ""
-
-  # Execute
-  if $DENO_OUTDATED; then upgrade_deno
-  elif ! $HAS_DENO; then install_deno
-  fi
-  source_deno_env
-
-  if ! $HAS_TMUX; then install_tmux; fi
-  if ! $HAS_FD; then install_fd; fi
-  if ! $HAS_WATCHEXEC; then install_watchexec; fi
 
   echo ""
   install_rig
   verify_path
 
   printf "\n"
-  ok "Installation complete!"
+  ok "Done!"
   printf "\n"
-  printf "  To activate in this shell:\n"
-  CURRENT_SHELL=$(basename "${SHELL:-/bin/sh}")
-  case "$CURRENT_SHELL" in
-    zsh)  printf "    source ~/.zshrc\n" ;;
-    bash) printf "    source ~/.bashrc\n" ;;
-    fish) printf "    source ~/.config/fish/config.fish\n" ;;
-    *)    printf "    exec \$SHELL\n" ;;
-  esac
-  printf "\n"
-  printf "  Then get started:\n"
+  printf "  Get started:\n"
   printf "    rig init      Create a rig.yaml\n"
   printf "    rig --help    Show all commands\n"
   printf "\n"

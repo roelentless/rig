@@ -1,8 +1,7 @@
 # Dockerfile for running rig tests on Linux
-FROM denoland/deno:debian
+FROM rust:bookworm
 
-# Install tmux, procps (for ps, pgrep), fd-find (for discover), and watchexec (for watch)
-# watchexec: download correct architecture DEB from GitHub releases
+# Install tmux, procps (for ps, pgrep), lsof, fd-find (for discover), and watchexec (for watch)
 RUN apt-get update && apt-get install -y \
     tmux \
     procps \
@@ -19,12 +18,16 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy source files (skip lockfile for cross-version compatibility)
-COPY rig.ts version.ts deno.json ./
-COPY test/ ./test/
+# Copy manifests first for dependency caching
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --tests 2>/dev/null || true && rm -rf src
 
-# Cache dependencies
-RUN deno cache rig.ts test/rig.test.ts
+# Copy real source
+COPY src/ ./src/
+COPY tests/ ./tests/
+
+# Build
+RUN cargo build --tests
 
 # Run tests
-CMD ["deno", "test", "-A", "test/rig.test.ts"]
+CMD ["cargo", "test", "--", "--test-threads=1"]
