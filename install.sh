@@ -213,21 +213,38 @@ install_rig() {
 verify_path() {
   DEST_DIR=$(install_dir)
 
+  # Already in PATH — nothing to do
   case ":$PATH:" in
     *":$DEST_DIR:"*) return ;;
   esac
 
-  echo ""
-  warn "${DEST_DIR} is not in your PATH"
-  warn "Add to your shell profile:"
-  echo ""
+  PATH_LINE="export PATH=\"${DEST_DIR}:\$PATH\""
+
+  # Add to ~/.profile (POSIX login shell config, sourced by bash/sh/dash)
+  add_to_profile "$HOME/.profile" "$PATH_LINE"
+
+  # For zsh users, also add to ~/.zprofile (zsh doesn't source ~/.profile)
   CURRENT_SHELL=$(basename "${SHELL:-/bin/sh}")
-  case "$CURRENT_SHELL" in
-    zsh)  printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.zshrc\n" "$DEST_DIR" ;;
-    bash) printf "    echo 'export PATH=\"%s:\$PATH\"' >> ~/.bashrc\n" "$DEST_DIR" ;;
-    fish) printf "    fish_add_path %s\n" "$DEST_DIR" ;;
-    *)    printf "    export PATH=\"%s:\$PATH\"\n" "$DEST_DIR" ;;
-  esac
+  if [ "$CURRENT_SHELL" = "zsh" ]; then
+    add_to_profile "$HOME/.zprofile" "$PATH_LINE"
+  fi
+
+  echo ""
+  warn "Open a new terminal or run: source ~/.profile"
+}
+
+add_to_profile() {
+  PROFILE_FILE="$1"
+  LINE="$2"
+
+  # Already present — skip
+  if [ -f "$PROFILE_FILE" ] && grep -qF "$LINE" "$PROFILE_FILE"; then
+    ok "PATH entry already in ${PROFILE_FILE}"
+    return
+  fi
+
+  printf '\n%s\n' "$LINE" >> "$PROFILE_FILE"
+  ok "Added PATH entry to ${PROFILE_FILE}"
 }
 
 # ============================================================================
