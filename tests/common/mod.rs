@@ -80,8 +80,8 @@ groups:
 
 // All test group prefixes for cleanup
 const ALL_TEST_GROUPS: &[&str] = &[
-    "rig-test", "database", "backend", "frontend", "infra", "shared",
-    "app", "root", "mygroup", "group-a", "group-b", "a-group", "sub", "new",
+    "rig-test", "database", "backend", "frontend", "infra", "shared", "app", "root", "mygroup",
+    "group-a", "group-b", "a-group", "sub", "new",
 ];
 
 pub struct RigResult {

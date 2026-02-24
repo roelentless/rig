@@ -5,20 +5,21 @@ use std::process::Stdio;
 use crossterm::{cursor, event, execute, terminal};
 use tokio::process::Command;
 
-use crate::config::{Config, ResolvedService, ResolvedTask, get_all_tasks};
-use crate::output::{c, c_raw, log, log_error, log_system, log_verbose, print, strip_control_codes};
-use crate::process::{
-    SessionManager, get_process_metrics, get_service_color,
-    stream_logs,
+use crate::config::{get_all_tasks, Config, ResolvedService, ResolvedTask};
+use crate::output::{
+    c, c_raw, log, log_error, log_system, log_verbose, print, strip_control_codes,
 };
+use crate::process::{get_process_metrics, get_service_color, stream_logs, SessionManager};
 
 // ============================================================================
 // DEPENDENCY ORDERING
 // ============================================================================
 
 pub fn compute_startup_order(targets: &[ResolvedService]) -> Vec<Vec<ResolvedService>> {
-    let requested: std::collections::HashSet<String> = targets.iter().map(|t| t.name.clone()).collect();
-    let by_name: HashMap<String, &ResolvedService> = targets.iter().map(|t| (t.name.clone(), t)).collect();
+    let requested: std::collections::HashSet<String> =
+        targets.iter().map(|t| t.name.clone()).collect();
+    let by_name: HashMap<String, &ResolvedService> =
+        targets.iter().map(|t| (t.name.clone(), t)).collect();
 
     // Build dependency graph
     let mut deps: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
@@ -36,12 +37,16 @@ pub fn compute_startup_order(targets: &[ResolvedService]) -> Vec<Vec<ResolvedSer
 
     // Kahn's algorithm
     let mut levels: Vec<Vec<ResolvedService>> = Vec::new();
-    let mut remaining: std::collections::HashSet<String> = targets.iter().map(|t| t.name.clone()).collect();
+    let mut remaining: std::collections::HashSet<String> =
+        targets.iter().map(|t| t.name.clone()).collect();
 
     while !remaining.is_empty() {
         let mut level = Vec::new();
         for name in &remaining {
-            let unresolved: Vec<_> = deps[name].iter().filter(|d| remaining.contains(*d)).collect();
+            let unresolved: Vec<_> = deps[name]
+                .iter()
+                .filter(|d| remaining.contains(*d))
+                .collect();
             if unresolved.is_empty() {
                 level.push(by_name[name].clone());
             }
@@ -64,7 +69,8 @@ pub fn compute_startup_order(targets: &[ResolvedService]) -> Vec<Vec<ResolvedSer
 }
 
 fn get_max_grace_ms(targets: &[ResolvedService]) -> u64 {
-    targets.iter()
+    targets
+        .iter()
         .filter_map(|t| t.def.healthcheck.as_ref()?.grace_ms)
         .max()
         .unwrap_or(0)
@@ -90,15 +96,23 @@ pub async fn cmd_start(
     for (i, level) in levels.iter().enumerate() {
         for target in level {
             let mgr = managers.get(&target.group).unwrap();
-            mgr.start(&target.name, &target.def, &mut remediated).await?;
+            mgr.start(&target.name, &target.def, &mut remediated)
+                .await?;
         }
 
         // Wait for grace period before next level
         if i < levels.len() - 1 {
             let grace_ms = get_max_grace_ms(level);
             if grace_ms > 0 {
-                log_verbose(&format!("Waiting {}ms grace period for: {}", grace_ms,
-                    level.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")));
+                log_verbose(&format!(
+                    "Waiting {}ms grace period for: {}",
+                    grace_ms,
+                    level
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
                 tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
             }
         }
@@ -154,10 +168,7 @@ async fn monitor(
     }
 }
 
-pub async fn cmd_stop(
-    managers: &HashMap<String, SessionManager>,
-    targets: &[ResolvedService],
-) {
+pub async fn cmd_stop(managers: &HashMap<String, SessionManager>, targets: &[ResolvedService]) {
     let mut stopped_any = false;
 
     for target in targets {
@@ -175,10 +186,7 @@ pub async fn cmd_stop(
     }
 }
 
-pub async fn cmd_kill(
-    managers: &HashMap<String, SessionManager>,
-    targets: &[ResolvedService],
-) {
+pub async fn cmd_kill(managers: &HashMap<String, SessionManager>, targets: &[ResolvedService]) {
     let mut killed_any = false;
 
     for target in targets {
@@ -206,7 +214,8 @@ pub async fn cmd_restart(
     for target in targets {
         let mgr = managers.get(&target.group).unwrap();
         mgr.stop(&target.name).await;
-        mgr.start(&target.name, &target.def, &mut remediated).await?;
+        mgr.start(&target.name, &target.def, &mut remediated)
+            .await?;
     }
     Ok(())
 }
@@ -239,7 +248,8 @@ pub async fn cmd_ps(
     } else {
         print(&format!(
             "{}GROUP          SERVICE        STATUS       UPTIME{}",
-            c("bold"), c("reset")
+            c("bold"),
+            c("reset")
         ));
         print(&"─".repeat(55));
     }
@@ -267,7 +277,11 @@ pub async fn cmd_ps(
                 };
                 ("running".to_string(), "green", uptime)
             }
-            Some(s) => (format!("exit({})", s.exit_code.unwrap_or(-1)), "red", "-".to_string()),
+            Some(s) => (
+                format!("exit({})", s.exit_code.unwrap_or(-1)),
+                "red",
+                "-".to_string(),
+            ),
         };
 
         if full {
@@ -281,27 +295,52 @@ pub async fn cmd_ps(
                         if metrics.ports.is_empty() {
                             "-".to_string()
                         } else {
-                            metrics.ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                            metrics
+                                .ports
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",")
                         },
                     )
                 } else {
-                    ("-".to_string(), "-".to_string(), "-".to_string(), "-".to_string())
+                    (
+                        "-".to_string(),
+                        "-".to_string(),
+                        "-".to_string(),
+                        "-".to_string(),
+                    )
                 }
             } else {
-                ("-".to_string(), "-".to_string(), "-".to_string(), "-".to_string())
+                (
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                )
             };
 
             print(&format!(
                 "{:<14} {:<14} {}{:<12}{} {:>5} {:>5}  {:<16} {:<10} {}",
-                target.group, target.name,
-                c(status_color), status_text, c("reset"),
-                mem, cpu, ports, uptime, pid
+                target.group,
+                target.name,
+                c(status_color),
+                status_text,
+                c("reset"),
+                mem,
+                cpu,
+                ports,
+                uptime,
+                pid
             ));
         } else {
             print(&format!(
                 "{:<14} {:<14} {}{:<12}{} {}",
-                target.group, target.name,
-                c(status_color), status_text, c("reset"),
+                target.group,
+                target.name,
+                c(status_color),
+                status_text,
+                c("reset"),
                 uptime
             ));
         }
@@ -309,10 +348,7 @@ pub async fn cmd_ps(
     print("");
 }
 
-pub async fn cmd_top(
-    managers: &HashMap<String, SessionManager>,
-    targets: &[ResolvedService],
-) {
+pub async fn cmd_top(managers: &HashMap<String, SessionManager>, targets: &[ResolvedService]) {
     let mut stdout = std::io::stdout();
 
     // Enter raw mode + alternate screen for clean TUI
@@ -320,20 +356,12 @@ pub async fn cmd_top(
         cmd_ps(managers, targets, true).await;
         return;
     }
-    let _ = execute!(
-        stdout,
-        terminal::EnterAlternateScreen,
-        cursor::Hide
-    );
+    let _ = execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide);
 
     let result = top_loop(managers, targets, &mut stdout).await;
 
     // Always restore terminal, even on error
-    let _ = execute!(
-        stdout,
-        cursor::Show,
-        terminal::LeaveAlternateScreen
-    );
+    let _ = execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 
     if let Err(e) = result {
@@ -407,7 +435,9 @@ async fn top_loop(
         let now = std::time::Instant::now();
         let mut updated = 0;
         for target in targets {
-            if updated >= 3 { break; }
+            if updated >= 3 {
+                break;
+            }
 
             let session = sessions_cache.get(&target.name);
             let is_running = session.map(|s| s.running).unwrap_or(false);
@@ -418,12 +448,15 @@ async fn top_loop(
                     let cached = metrics_cache.get(&target.name).unwrap();
                     if now.duration_since(cached.last_update) >= cached.refresh_interval() {
                         let m = get_process_metrics(pid).await;
-                        metrics_cache.insert(target.name.clone(), ServiceMetrics {
-                            memory_mb: m.memory_mb,
-                            cpu_percent: m.cpu_percent,
-                            ports: m.ports,
-                            last_update: now,
-                        });
+                        metrics_cache.insert(
+                            target.name.clone(),
+                            ServiceMetrics {
+                                memory_mb: m.memory_mb,
+                                cpu_percent: m.cpu_percent,
+                                ports: m.ports,
+                                last_update: now,
+                            },
+                        );
                         updated += 1;
                     }
                 }
@@ -442,8 +475,12 @@ async fn top_loop(
 
         buf.push_str(&format!(
             "{}rig top{} — {} — {} service(s)  {}(q to quit){}\r\n\r\n",
-            c_raw("bold"), c_raw("reset"), ts, targets.len(),
-            c_raw("dim"), c_raw("reset"),
+            c_raw("bold"),
+            c_raw("reset"),
+            ts,
+            targets.len(),
+            c_raw("dim"),
+            c_raw("reset"),
         ));
 
         buf.push_str(&format!(
@@ -458,7 +495,12 @@ async fn top_loop(
             let m = metrics_cache.get(&target.name).unwrap();
 
             let (status_str, mem, cpu, ports, started) = match session {
-                None | Some(SessionStatus { running: false, exit_code: None, .. }) => (
+                None
+                | Some(SessionStatus {
+                    running: false,
+                    exit_code: None,
+                    ..
+                }) => (
                     format!("{}{:<12}{}", c_raw("dim"), "stopped", c_raw("reset")),
                     "-".to_string(),
                     "-".to_string(),
@@ -466,28 +508,56 @@ async fn top_loop(
                     "-".to_string(),
                 ),
                 Some(s) if !s.running => (
-                    format!("{}{:<12}{}", c_raw("red"), format!("exit({})", s.exit_code.unwrap_or(-1)), c_raw("reset")),
+                    format!(
+                        "{}{:<12}{}",
+                        c_raw("red"),
+                        format!("exit({})", s.exit_code.unwrap_or(-1)),
+                        c_raw("reset")
+                    ),
                     "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
-                    s.created.map(format_started).unwrap_or_else(|| "-".to_string()),
+                    s.created
+                        .map(format_started)
+                        .unwrap_or_else(|| "-".to_string()),
                 ),
                 Some(s) => {
-                    let cpu_color = if m.cpu_percent > 50.0 { "red" }
-                        else if m.cpu_percent > 10.0 { "yellow" }
-                        else { "reset" };
+                    let cpu_color = if m.cpu_percent > 50.0 {
+                        "red"
+                    } else if m.cpu_percent > 10.0 {
+                        "yellow"
+                    } else {
+                        "reset"
+                    };
                     let port_str = if m.ports.is_empty() {
                         "-".to_string()
                     } else {
-                        let joined = m.ports.iter().take(3).map(|p| p.to_string()).collect::<Vec<_>>().join(",");
-                        if m.ports.len() > 3 { format!("{}...", joined) } else { joined }
+                        let joined = m
+                            .ports
+                            .iter()
+                            .take(3)
+                            .map(|p| p.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        if m.ports.len() > 3 {
+                            format!("{}...", joined)
+                        } else {
+                            joined
+                        }
                     };
                     (
                         format!("{}{:<12}{}", c_raw("green"), "running", c_raw("reset")),
                         format!("{}M", m.memory_mb),
-                        format!("{}{:.1}%{}", c_raw(cpu_color), m.cpu_percent, c_raw("reset")),
+                        format!(
+                            "{}{:.1}%{}",
+                            c_raw(cpu_color),
+                            m.cpu_percent,
+                            c_raw("reset")
+                        ),
                         port_str,
-                        s.created.map(format_started).unwrap_or_else(|| "-".to_string()),
+                        s.created
+                            .map(format_started)
+                            .unwrap_or_else(|| "-".to_string()),
                     )
                 }
             };
@@ -512,7 +582,10 @@ async fn top_loop(
                 match key.code {
                     event::KeyCode::Char('q') | event::KeyCode::Char('Q') => break,
                     event::KeyCode::Char('c')
-                        if key.modifiers.contains(event::KeyModifiers::CONTROL) => break,
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                    {
+                        break
+                    }
                     _ => {}
                 }
             }
@@ -590,7 +663,10 @@ pub async fn cmd_logs(
 // ============================================================================
 
 fn shell_escape(arg: &str) -> String {
-    if arg.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':')) {
+    if arg
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':'))
+    {
         arg.to_string()
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
@@ -601,7 +677,14 @@ pub async fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
     let full_command = if args.is_empty() {
         resolved.command.clone()
     } else {
-        format!("{} {}", resolved.command, args.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" "))
+        format!(
+            "{} {}",
+            resolved.command,
+            args.iter()
+                .map(|a| shell_escape(a))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
     };
 
     log_verbose(&format!("task={}", resolved.path));
@@ -623,18 +706,16 @@ pub async fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
     match cmd.status().await {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
-            log_error(&format!("Failed to run task '{}' (command='{}', dir='{}'): {}",
-                resolved.path, resolved.command, resolved.working_dir, e));
+            log_error(&format!(
+                "Failed to run task '{}' (command='{}', dir='{}'): {}",
+                resolved.path, resolved.command, resolved.working_dir, e
+            ));
             1
         }
     }
 }
 
-pub async fn cmd_tasks(
-    tasks: &[ResolvedTask],
-    args: &[String],
-    parallel: bool,
-) -> i32 {
+pub async fn cmd_tasks(tasks: &[ResolvedTask], args: &[String], parallel: bool) -> i32 {
     // Single task
     if tasks.len() == 1 {
         return run_task(&tasks[0], args).await;
@@ -651,7 +732,10 @@ pub async fn cmd_tasks(
         for task in tasks {
             let code = run_task(task, &[]).await;
             if code != 0 {
-                log_error(&format!("Task '{}' failed with exit code {}", task.path, code));
+                log_error(&format!(
+                    "Task '{}' failed with exit code {}",
+                    task.path, code
+                ));
                 return code;
             }
         }
@@ -664,7 +748,10 @@ pub async fn cmd_tasks(
             handles.push(tokio::spawn(async move {
                 let code = run_task(&task, &[]).await;
                 if code != 0 {
-                    log_error(&format!("Task '{}' failed with exit code {}", task.path, code));
+                    log_error(&format!(
+                        "Task '{}' failed with exit code {}",
+                        task.path, code
+                    ));
                 }
                 (task.path.clone(), code)
             }));
@@ -712,7 +799,14 @@ pub fn cmd_task_list(config: &Config, group_filter: Option<&str>) -> Result<(), 
         } else {
             String::new()
         };
-        print(&format!("{}{:<30}{} {}{}", c("cyan"), task.path, c("reset"), cmd, desc));
+        print(&format!(
+            "{}{:<30}{} {}{}",
+            c("cyan"),
+            task.path,
+            c("reset"),
+            cmd,
+            desc
+        ));
     }
     print("");
     Ok(())
@@ -740,7 +834,8 @@ pub fn cmd_config(
         let mut groups_map = serde_json::Map::new();
 
         for target in targets {
-            let group_entry = groups_map.entry(target.group.clone())
+            let group_entry = groups_map
+                .entry(target.group.clone())
                 .or_insert_with(|| serde_json::json!({"services": {}}));
             if let Some(services) = group_entry.get_mut("services") {
                 if let Some(obj) = services.as_object_mut() {
@@ -770,10 +865,16 @@ pub fn cmd_config(
         let wd = make_relative(&target.def.working_dir, &cwd_str);
         print(&format!(
             "{}{:<12}{} {}{:<12}{} {} {}working_dir={}{}",
-            c("dim"), target.group, c("reset"),
-            c(&color), target.name, c("reset"),
+            c("dim"),
+            target.group,
+            c("reset"),
+            c(&color),
+            target.name,
+            c("reset"),
             target.def.command,
-            c("dim"), wd, c("reset")
+            c("dim"),
+            wd,
+            c("reset")
         ));
     }
 }
@@ -781,7 +882,11 @@ pub fn cmd_config(
 fn make_relative(path: &str, cwd: &str) -> String {
     if path.starts_with(cwd) {
         let rest = path[cwd.len()..].trim_start_matches('/');
-        if rest.is_empty() { ".".to_string() } else { rest.to_string() }
+        if rest.is_empty() {
+            ".".to_string()
+        } else {
+            rest.to_string()
+        }
     } else {
         path.to_string()
     }
@@ -824,16 +929,25 @@ async fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
 
     let output = Command::new("fd")
         .args([
-            "--type", "f",
+            "--type",
+            "f",
             "--hidden",
-            "--exclude", "node_modules",
-            "--exclude", ".git",
-            "--exclude", "vendor",
-            "--exclude", ".rig",
-            "--exclude", "__pycache__",
-            "--exclude", ".venv",
-            "--exclude", "dist",
-            "--exclude", "build",
+            "--exclude",
+            "node_modules",
+            "--exclude",
+            ".git",
+            "--exclude",
+            "vendor",
+            "--exclude",
+            ".rig",
+            "--exclude",
+            "__pycache__",
+            "--exclude",
+            ".venv",
+            "--exclude",
+            "dist",
+            "--exclude",
+            "build",
             r"(^rig\.ya?ml$|.*\.rig\.yaml$)",
             root_dir,
         ])
@@ -872,12 +986,17 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
     all_files.sort();
 
     // Find root config
-    let root_configs: Vec<_> = all_files.iter().filter(|f| {
-        let dir = std::path::Path::new(f).parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        dir == abs_root || dir == abs_root.trim_end_matches('/')
-    }).cloned().collect();
+    let root_configs: Vec<_> = all_files
+        .iter()
+        .filter(|f| {
+            let dir = std::path::Path::new(f)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            dir == abs_root || dir == abs_root.trim_end_matches('/')
+        })
+        .cloned()
+        .collect();
 
     if root_configs.is_empty() {
         print(&format!("No root config found in {}", abs_root));
@@ -889,12 +1008,14 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
         return Ok(());
     }
 
-    let root_config = root_configs.iter()
+    let root_config = root_configs
+        .iter()
         .find(|f| f.ends_with("/rig.yaml"))
         .unwrap_or(&root_configs[0])
         .clone();
 
-    let root_config_rel = root_config.strip_prefix(&format!("{}/", abs_root))
+    let root_config_rel = root_config
+        .strip_prefix(&format!("{}/", abs_root))
         .unwrap_or(&root_config)
         .to_string();
 
@@ -902,7 +1023,11 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
     for f in &all_files {
         let rel = f.strip_prefix(&format!("{}/", abs_root)).unwrap_or(f);
         let is_root = *f == root_config;
-        print(&format!("  {}{}", rel, if is_root { " (root)" } else { "" }));
+        print(&format!(
+            "  {}{}",
+            rel,
+            if is_root { " (root)" } else { "" }
+        ));
     }
 
     // Get current imports
@@ -910,7 +1035,11 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
         if let Ok(raw) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
             raw.get("imports")
                 .and_then(|v| v.as_sequence())
-                .map(|seq| seq.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -929,17 +1058,22 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
     }
 
     // Find missing imports
-    let imported_set: std::collections::HashSet<String> = current_imports.iter().map(|imp| {
-        if imp.starts_with('/') {
-            imp.clone()
-        } else {
-            format!("{}/{}", abs_root, imp)
-        }
-    }).collect();
+    let imported_set: std::collections::HashSet<String> = current_imports
+        .iter()
+        .map(|imp| {
+            if imp.starts_with('/') {
+                imp.clone()
+            } else {
+                format!("{}/{}", abs_root, imp)
+            }
+        })
+        .collect();
 
     let mut missing = Vec::new();
     for f in &all_files {
-        if *f == root_config { continue; }
+        if *f == root_config {
+            continue;
+        }
         if !imported_set.contains(f) {
             let rel = f.strip_prefix(&format!("{}/", abs_root)).unwrap_or(f);
             missing.push(rel.to_string());
@@ -972,15 +1106,22 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
     let mut raw: serde_yaml::Value = serde_yaml::from_str(&content)
         .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
 
-    let mapping = raw.as_mapping_mut()
+    let mapping = raw
+        .as_mapping_mut()
         .ok_or_else(|| "Root config is not a YAML mapping".to_string())?;
     let imports_key = serde_yaml::Value::String("imports".to_string());
-    let existing_imports: Vec<String> = mapping.get(&imports_key)
+    let existing_imports: Vec<String> = mapping
+        .get(&imports_key)
         .and_then(|v| v.as_sequence())
-        .map(|seq| seq.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
-    let mut new_imports: Vec<serde_yaml::Value> = existing_imports.iter()
+    let mut new_imports: Vec<serde_yaml::Value> = existing_imports
+        .iter()
         .map(|s| serde_yaml::Value::String(s.clone()))
         .collect();
     for m in &missing {
@@ -989,11 +1130,15 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
 
     mapping.insert(imports_key, serde_yaml::Value::Sequence(new_imports));
 
-    let new_content = serde_yaml::to_string(&raw)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let new_content =
+        serde_yaml::to_string(&raw).map_err(|e| format!("Failed to serialize config: {}", e))?;
     std::fs::write(&root_config, &new_content)
         .map_err(|e| format!("Failed to write {}: {}", root_config, e))?;
 
-    print(&format!("\nUpdated {} with {} new import(s).", root_config_rel, missing.len()));
+    print(&format!(
+        "\nUpdated {} with {} new import(s).",
+        root_config_rel,
+        missing.len()
+    ));
     Ok(())
 }

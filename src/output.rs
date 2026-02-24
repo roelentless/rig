@@ -35,8 +35,8 @@ static COLORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| 
 
 /// Deterministic color palette for services (assigned by index)
 pub const SERVICE_COLORS: &[&str] = &[
-    "cyan", "yellow", "magenta", "teal", "green", "blue", "orange",
-    "pink", "lavender", "violet", "lime", "coral", "sky", "gold",
+    "cyan", "yellow", "magenta", "teal", "green", "blue", "orange", "pink", "lavender", "violet",
+    "lime", "coral", "sky", "gold",
 ];
 
 /// Check if stdout is a TTY
@@ -86,7 +86,14 @@ pub fn log(msg: &str, prefix: &str, color: &str) {
     } else {
         String::new()
     };
-    print(&format!("{}{}{} {}{}", c("dim"), ts, c("reset"), prefix_str, msg));
+    print(&format!(
+        "{}{}{} {}{}",
+        c("dim"),
+        ts,
+        c("reset"),
+        prefix_str,
+        msg
+    ));
 }
 
 pub fn log_system(msg: &str) {
@@ -102,7 +109,13 @@ pub fn log_error(msg: &str) {
     let _ = writeln!(
         io::stderr(),
         "{}{}{} {}{:<12}{} {}",
-        dim, ts, reset, red, "rig", reset, msg
+        dim,
+        ts,
+        reset,
+        red,
+        "rig",
+        reset,
+        msg
     );
 }
 
@@ -116,11 +129,14 @@ pub fn log_verbose(msg: &str) {
 /// Preserves color codes but removes cursor movement, line clearing, etc.
 pub fn strip_control_codes(line: &str) -> String {
     static RE_CR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\r").unwrap());
-    static RE_CURSOR_MOVE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[\d*[ABCD]").unwrap());
-    static RE_CURSOR_POS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[\d*;\d*[Hf]").unwrap());
+    static RE_CURSOR_MOVE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\x1b\[\d*[ABCD]").unwrap());
+    static RE_CURSOR_POS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\x1b\[\d*;\d*[Hf]").unwrap());
     static RE_CURSOR_COL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[\d*G").unwrap());
     static RE_CLEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[\d*[JK]").unwrap());
-    static RE_CURSOR_VIS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[\?25[lh]").unwrap());
+    static RE_CURSOR_VIS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\x1b\[\?25[lh]").unwrap());
 
     let s = RE_CR.replace_all(line, "");
     let s = RE_CURSOR_MOVE.replace_all(&s, "");
@@ -136,4 +152,3 @@ pub fn strip_ansi(s: &str) -> String {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap());
     RE.replace_all(s, "").into_owned()
 }
-

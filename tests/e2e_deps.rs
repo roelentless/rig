@@ -5,7 +5,10 @@ use common::*;
 #[test]
 fn depends_on_ordering() {
     let ctx = TestContext::new();
-    ctx.write_file("rig.yaml", &format!(r#"
+    ctx.write_file(
+        "rig.yaml",
+        &format!(
+            r#"
 groups:
   {}:
     services:
@@ -24,7 +27,10 @@ groups:
         command: sh -c "echo 'worker started'; sleep 30"
         working_dir: /tmp
         depends_on: [db]
-"#, TEST_GROUP));
+"#,
+            TEST_GROUP
+        ),
+    );
 
     let result = ctx.rig(&["start", "-d"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
@@ -32,7 +38,9 @@ groups:
     let stdout = &result.stdout;
     let db_idx = stdout.find("Started db").expect("db should be started");
     let api_idx = stdout.find("Started api").expect("api should be started");
-    let worker_idx = stdout.find("Started worker").expect("worker should be started");
+    let worker_idx = stdout
+        .find("Started worker")
+        .expect("worker should be started");
 
     assert!(db_idx < api_idx, "db should start before api");
     assert!(db_idx < worker_idx, "db should start before worker");
@@ -45,7 +53,10 @@ groups:
 #[test]
 fn healthcheck_grace_ms_delays() {
     let ctx = TestContext::new();
-    ctx.write_file("rig.yaml", &format!(r#"
+    ctx.write_file(
+        "rig.yaml",
+        &format!(
+            r#"
 groups:
   {}:
     services:
@@ -59,14 +70,21 @@ groups:
         command: sh -c "echo 'client started'; sleep 30"
         working_dir: /tmp
         depends_on: [slow-db]
-"#, TEST_GROUP));
+"#,
+            TEST_GROUP
+        ),
+    );
 
     let start = std::time::Instant::now();
     let result = ctx.rig(&["start", "-d"]);
     let elapsed = start.elapsed().as_millis();
 
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    assert!(elapsed >= 200, "Expected at least 200ms delay, got {}ms", elapsed);
+    assert!(
+        elapsed >= 200,
+        "Expected at least 200ms delay, got {}ms",
+        elapsed
+    );
 
     assert!(session_exists("slow-db", TEST_GROUP));
     assert!(session_exists("client", TEST_GROUP));
@@ -75,7 +93,10 @@ groups:
 #[test]
 fn invalid_depends_on_errors() {
     let ctx = TestContext::new();
-    ctx.write_file("rig.yaml", &format!(r#"
+    ctx.write_file(
+        "rig.yaml",
+        &format!(
+            r#"
 groups:
   {}:
     services:
@@ -83,11 +104,18 @@ groups:
         command: sh -c "echo 'api'; sleep 30"
         working_dir: /tmp
         depends_on: [nonexistent]
-"#, TEST_GROUP));
+"#,
+            TEST_GROUP
+        ),
+    );
 
     let result = ctx.rig(&["start", "-d"]);
     assert_eq!(result.code, 1);
-    assert!(result.stderr.contains("depends on unknown service"), "stderr: {}", result.stderr);
+    assert!(
+        result.stderr.contains("depends on unknown service"),
+        "stderr: {}",
+        result.stderr
+    );
 }
 
 #[test]
@@ -107,7 +135,8 @@ fn ps_f_shows_full_metrics() {
     assert!(stdout.contains("PID"), "stdout: {}", stdout);
 
     let clean = strip_ansi(stdout);
-    let echo_line = clean.lines()
+    let echo_line = clean
+        .lines()
         .find(|l| l.contains("echo-svc") && l.contains("running"))
         .expect("echo-svc running line not found");
 
@@ -123,6 +152,10 @@ fn ps_f_shows_full_metrics() {
     assert!(parts[4].ends_with('%'), "CPU format, got: {}", parts[4]);
 
     // PID at the end should be a valid number
-    let pid: u32 = parts.last().unwrap().parse().expect("PID should be a number");
+    let pid: u32 = parts
+        .last()
+        .unwrap()
+        .parse()
+        .expect("PID should be a number");
     assert!(pid > 0, "PID should be positive, got: {}", pid);
 }

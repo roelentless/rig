@@ -155,15 +155,35 @@ fn group_keys() -> HashSet<&'static str> {
 }
 fn service_keys() -> HashSet<&'static str> {
     [
-        "command", "working_dir", "environment", "env_file", "color",
-        "depends_on", "healthcheck", "tasks", "watch", "requirements",
-    ].into_iter().collect()
+        "command",
+        "working_dir",
+        "environment",
+        "env_file",
+        "color",
+        "depends_on",
+        "healthcheck",
+        "tasks",
+        "watch",
+        "requirements",
+    ]
+    .into_iter()
+    .collect()
 }
 fn task_keys() -> HashSet<&'static str> {
-    ["command", "working_dir", "environment", "env_file", "description"].into_iter().collect()
+    [
+        "command",
+        "working_dir",
+        "environment",
+        "env_file",
+        "description",
+    ]
+    .into_iter()
+    .collect()
 }
 fn watch_keys() -> HashSet<&'static str> {
-    ["paths", "extensions", "patterns", "ignore", "debounce"].into_iter().collect()
+    ["paths", "extensions", "patterns", "ignore", "debounce"]
+        .into_iter()
+        .collect()
 }
 fn healthcheck_keys() -> HashSet<&'static str> {
     ["grace_ms"].into_iter().collect()
@@ -190,7 +210,10 @@ fn validate_keys(
                 let valid_str: Vec<&str> = valid.into_iter().copied().collect();
                 errors.push(format!(
                     "Unknown key '{}' in {} ({}). Valid keys: {}",
-                    key_str, context, config_path, valid_str.join(", ")
+                    key_str,
+                    context,
+                    config_path,
+                    valid_str.join(", ")
                 ));
             }
         }
@@ -202,14 +225,24 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
     let mut errors = Vec::new();
 
     if let Some(root) = raw.as_mapping() {
-        errors.extend(validate_keys(root, &root_keys(), "config root", config_path));
+        errors.extend(validate_keys(
+            root,
+            &root_keys(),
+            "config root",
+            config_path,
+        ));
 
         if let Some(groups_val) = root.get("groups") {
             if let Some(groups) = groups_val.as_mapping() {
                 for (group_key, group_val) in groups {
                     let group_name = group_key.as_str().unwrap_or("?");
                     if let Some(g) = group_val.as_mapping() {
-                        errors.extend(validate_keys(g, &group_keys(), &format!("group '{}'", group_name), config_path));
+                        errors.extend(validate_keys(
+                            g,
+                            &group_keys(),
+                            &format!("group '{}'", group_name),
+                            config_path,
+                        ));
 
                         // Validate services
                         if let Some(services_val) = g.get("services") {
@@ -230,7 +263,10 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
                                                 errors.extend(validate_keys(
                                                     w,
                                                     &watch_keys(),
-                                                    &format!("watch in service '{}.{}'", group_name, svc_name),
+                                                    &format!(
+                                                        "watch in service '{}.{}'",
+                                                        group_name, svc_name
+                                                    ),
                                                     config_path,
                                                 ));
                                             }
@@ -242,7 +278,10 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
                                                 errors.extend(validate_keys(
                                                     hc,
                                                     &healthcheck_keys(),
-                                                    &format!("healthcheck in service '{}.{}'", group_name, svc_name),
+                                                    &format!(
+                                                        "healthcheck in service '{}.{}'",
+                                                        group_name, svc_name
+                                                    ),
                                                     config_path,
                                                 ));
                                             }
@@ -256,7 +295,10 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
                                                         errors.extend(validate_keys(
                                                             e,
                                                             &env_file_entry_keys(),
-                                                            &format!("env_file entry in service '{}.{}'", group_name, svc_name),
+                                                            &format!(
+                                                                "env_file entry in service '{}.{}'",
+                                                                group_name, svc_name
+                                                            ),
                                                             config_path,
                                                         ));
                                                     }
@@ -272,7 +314,10 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
                                                         errors.extend(validate_keys(
                                                             r,
                                                             &requirement_keys(),
-                                                            &format!("requirement in service '{}.{}'", group_name, svc_name),
+                                                            &format!(
+                                                                "requirement in service '{}.{}'",
+                                                                group_name, svc_name
+                                                            ),
                                                             config_path,
                                                         ));
                                                     }
@@ -289,7 +334,10 @@ fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<
                                                         errors.extend(validate_keys(
                                                             t,
                                                             &task_keys(),
-                                                            &format!("task '{}.{}.{}'", group_name, svc_name, tname),
+                                                            &format!(
+                                                                "task '{}.{}.{}'",
+                                                                group_name, svc_name, tname
+                                                            ),
                                                             config_path,
                                                         ));
                                                     }
@@ -374,7 +422,9 @@ fn normalize_env_values(env: &HashMap<String, serde_yaml::Value>) -> HashMap<Str
         .collect()
 }
 
-fn load_env_files(entries: &[ResolvedEnvFileEntry]) -> Result<HashMap<String, String>, ConfigError> {
+fn load_env_files(
+    entries: &[ResolvedEnvFileEntry],
+) -> Result<HashMap<String, String>, ConfigError> {
     let mut result = HashMap::new();
 
     for entry in entries {
@@ -420,10 +470,7 @@ struct ResolvedEnvFileEntry {
     required: bool,
 }
 
-fn resolve_env_file_spec(
-    spec: &serde_yaml::Value,
-    config_dir: &str,
-) -> Vec<ResolvedEnvFileEntry> {
+fn resolve_env_file_spec(spec: &serde_yaml::Value, config_dir: &str) -> Vec<ResolvedEnvFileEntry> {
     let mut entries = Vec::new();
 
     match spec {
@@ -450,10 +497,8 @@ fn resolve_env_file_spec(
                         if let Some(path_val) = m.get("path") {
                             let path_str = path_val.as_str().unwrap_or("");
                             let resolved = resolve_path(path_str, config_dir);
-                            let required = m
-                                .get("required")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(true);
+                            let required =
+                                m.get("required").and_then(|v| v.as_bool()).unwrap_or(true);
                             entries.push(ResolvedEnvFileEntry {
                                 path: resolved,
                                 original_path: path_str.to_string(),
@@ -477,7 +522,11 @@ fn resolve_env_file_spec(
 /// Walk upward from start_dir to find the nearest rig config file.
 pub fn find_nearest_config(start_dir: &Path) -> Result<PathBuf, ConfigError> {
     let mut dir = std::fs::canonicalize(start_dir).map_err(|e| {
-        ConfigError::generic(format!("Cannot resolve path '{}': {}", start_dir.display(), e))
+        ConfigError::generic(format!(
+            "Cannot resolve path '{}': {}",
+            start_dir.display(),
+            e
+        ))
     })?;
 
     loop {
@@ -539,15 +588,19 @@ fn load_config_recursive(
 
     // Circular import check
     if ctx.import_chain.contains(&abs_path) {
-        let mut cycle_parts: Vec<String> = ctx.import_chain.iter().map(|p| {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let cwd_str = cwd.to_string_lossy();
-            if p.starts_with(cwd_str.as_ref()) {
-                format!("./{}", &p[cwd_str.len()..].trim_start_matches('/'))
-            } else {
-                p.clone()
-            }
-        }).collect();
+        let mut cycle_parts: Vec<String> = ctx
+            .import_chain
+            .iter()
+            .map(|p| {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let cwd_str = cwd.to_string_lossy();
+                if p.starts_with(cwd_str.as_ref()) {
+                    format!("./{}", &p[cwd_str.len()..].trim_start_matches('/'))
+                } else {
+                    p.clone()
+                }
+            })
+            .collect();
         let last = {
             let cwd = std::env::current_dir().unwrap_or_default();
             let cwd_str = cwd.to_string_lossy();
@@ -575,12 +628,14 @@ fn load_config_recursive(
 
     // Read and parse YAML
     let content = std::fs::read_to_string(config_path).map_err(|e| {
-        ConfigError::generic(format!("Failed to read config file '{}': {}", config_path, e))
+        ConfigError::generic(format!(
+            "Failed to read config file '{}': {}",
+            config_path, e
+        ))
     })?;
 
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
-        ConfigError::generic(format!("Invalid YAML in {}: {}", config_path, e))
-    })?;
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| ConfigError::generic(format!("Invalid YAML in {}: {}", config_path, e)))?;
 
     // Schema validation
     validate_config_schema(&yaml_value, config_path)?;
@@ -596,7 +651,10 @@ fn load_config_recursive(
     if let Some(raw_groups) = &raw.groups {
         for (group_name, group_value) in raw_groups {
             // Validate group name
-            if !group_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            if !group_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            {
                 return Err(ConfigError::generic(format!(
                     "Invalid group name '{}' in {}: must be alphanumeric with hyphens/underscores only",
                     group_name, config_path
@@ -604,7 +662,10 @@ fn load_config_recursive(
             }
 
             let group_map = group_value.as_mapping().ok_or_else(|| {
-                ConfigError::generic(format!("Group '{}' in {} must be a mapping", group_name, config_path))
+                ConfigError::generic(format!(
+                    "Group '{}' in {} must be a mapping",
+                    group_name, config_path
+                ))
             })?;
 
             let has_services = group_map.get("services").is_some();
@@ -633,20 +694,26 @@ fn load_config_recursive(
                         })?;
 
                         // Required fields
-                        let command = s.get("command")
+                        let command = s
+                            .get("command")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| ConfigError::generic(format!(
-                                "Service '{}.{}' in {} must have a 'command' field",
-                                group_name, svc_name, config_path
-                            )))?
+                            .ok_or_else(|| {
+                                ConfigError::generic(format!(
+                                    "Service '{}.{}' in {} must have a 'command' field",
+                                    group_name, svc_name, config_path
+                                ))
+                            })?
                             .to_string();
 
-                        let working_dir_raw = s.get("working_dir")
+                        let working_dir_raw = s
+                            .get("working_dir")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| ConfigError::generic(format!(
-                                "Service '{}.{}' in {} must have a 'working_dir' field",
-                                group_name, svc_name, config_path
-                            )))?;
+                            .ok_or_else(|| {
+                                ConfigError::generic(format!(
+                                    "Service '{}.{}' in {} must have a 'working_dir' field",
+                                    group_name, svc_name, config_path
+                                ))
+                            })?;
 
                         let working_dir = resolve_path(working_dir_raw, config_dir);
 
@@ -654,7 +721,8 @@ fn load_config_recursive(
                         let mut environment: Option<HashMap<String, String>> = None;
                         if let Some(env_val) = s.get("environment") {
                             if let Some(env_map) = env_val.as_mapping() {
-                                let map: HashMap<String, serde_yaml::Value> = env_map.iter()
+                                let map: HashMap<String, serde_yaml::Value> = env_map
+                                    .iter()
                                     .filter_map(|(k, v)| {
                                         k.as_str().map(|ks| (ks.to_string(), v.clone()))
                                     })
@@ -704,36 +772,48 @@ fn load_config_recursive(
                                 let mut wd = WatchDef::default();
                                 if let Some(paths_val) = w.get("paths") {
                                     if let Some(seq) = paths_val.as_sequence() {
-                                        wd.paths = Some(seq.iter().filter_map(|p| {
-                                            p.as_str().map(|s| resolve_path(s, &working_dir))
-                                        }).collect());
+                                        wd.paths = Some(
+                                            seq.iter()
+                                                .filter_map(|p| {
+                                                    p.as_str()
+                                                        .map(|s| resolve_path(s, &working_dir))
+                                                })
+                                                .collect(),
+                                        );
                                     }
                                 }
                                 if let Some(ext_val) = w.get("extensions") {
                                     if let Some(seq) = ext_val.as_sequence() {
-                                        wd.extensions = Some(seq.iter().filter_map(|e| {
-                                            e.as_str().map(String::from)
-                                        }).collect());
+                                        wd.extensions = Some(
+                                            seq.iter()
+                                                .filter_map(|e| e.as_str().map(String::from))
+                                                .collect(),
+                                        );
                                     }
                                 }
                                 if let Some(pat_val) = w.get("patterns") {
                                     if let Some(seq) = pat_val.as_sequence() {
-                                        wd.patterns = Some(seq.iter().filter_map(|p| {
-                                            p.as_str().map(String::from)
-                                        }).collect());
+                                        wd.patterns = Some(
+                                            seq.iter()
+                                                .filter_map(|p| p.as_str().map(String::from))
+                                                .collect(),
+                                        );
                                     }
                                 }
                                 if let Some(ign_val) = w.get("ignore") {
                                     if let Some(seq) = ign_val.as_sequence() {
-                                        wd.ignore = Some(seq.iter().filter_map(|i| {
-                                            i.as_str().map(String::from)
-                                        }).collect());
+                                        wd.ignore = Some(
+                                            seq.iter()
+                                                .filter_map(|i| i.as_str().map(String::from))
+                                                .collect(),
+                                        );
                                     }
                                 }
                                 if let Some(deb_val) = w.get("debounce") {
-                                    wd.debounce = Some(deb_val.as_str()
-                                        .map(String::from)
-                                        .unwrap_or_else(|| format!("{}", deb_val.as_u64().unwrap_or(0))));
+                                    wd.debounce =
+                                        Some(deb_val.as_str().map(String::from).unwrap_or_else(
+                                            || format!("{}", deb_val.as_u64().unwrap_or(0)),
+                                        ));
                                 }
                                 Some(wd)
                             } else {
@@ -766,7 +846,10 @@ fn load_config_recursive(
                                             group_name, svc_name, config_path
                                         ))
                                     })?.to_string();
-                                    reqs.push(RequirementDef { check, command: cmd });
+                                    reqs.push(RequirementDef {
+                                        check,
+                                        command: cmd,
+                                    });
                                 }
                                 Some(reqs)
                             } else {
@@ -789,21 +872,30 @@ fn load_config_recursive(
                                         ))
                                     })?;
 
-                                    let tcmd = t.get("command").and_then(|v| v.as_str())
-                                        .ok_or_else(|| ConfigError::generic(format!(
-                                            "Task '{}.{}.{}' in {} must have a 'command' field",
-                                            group_name, svc_name, tname, config_path
-                                        )))?
+                                    let tcmd = t
+                                        .get("command")
+                                        .and_then(|v| v.as_str())
+                                        .ok_or_else(|| {
+                                            ConfigError::generic(format!(
+                                                "Task '{}.{}.{}' in {} must have a 'command' field",
+                                                group_name, svc_name, tname, config_path
+                                            ))
+                                        })?
                                         .to_string();
 
-                                    let twd = t.get("working_dir").and_then(|v| v.as_str())
+                                    let twd = t
+                                        .get("working_dir")
+                                        .and_then(|v| v.as_str())
                                         .map(|wd| resolve_path(wd, config_dir));
 
                                     let mut tenv: Option<HashMap<String, String>> = None;
                                     if let Some(env_val) = t.get("environment") {
                                         if let Some(env_map) = env_val.as_mapping() {
-                                            let map: HashMap<String, serde_yaml::Value> = env_map.iter()
-                                                .filter_map(|(k, v)| k.as_str().map(|ks| (ks.to_string(), v.clone())))
+                                            let map: HashMap<String, serde_yaml::Value> = env_map
+                                                .iter()
+                                                .filter_map(|(k, v)| {
+                                                    k.as_str().map(|ks| (ks.to_string(), v.clone()))
+                                                })
                                                 .collect();
                                             tenv = Some(normalize_env_values(&map));
                                         }
@@ -822,15 +914,21 @@ fn load_config_recursive(
                                         }
                                     }
 
-                                    let tdesc = t.get("description").and_then(|v| v.as_str()).map(String::from);
+                                    let tdesc = t
+                                        .get("description")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
 
-                                    tm.insert(tname.to_string(), TaskDef {
-                                        command: tcmd,
-                                        working_dir: twd,
-                                        environment: tenv,
-                                        env_file: None, // already processed
-                                        description: tdesc,
-                                    });
+                                    tm.insert(
+                                        tname.to_string(),
+                                        TaskDef {
+                                            command: tcmd,
+                                            working_dir: twd,
+                                            environment: tenv,
+                                            env_file: None, // already processed
+                                            description: tdesc,
+                                        },
+                                    );
                                 }
                                 Some(tm)
                             } else {
@@ -840,18 +938,21 @@ fn load_config_recursive(
                             None
                         };
 
-                        services_map.insert(svc_name.to_string(), ServiceDef {
-                            command,
-                            working_dir,
-                            environment,
-                            env_file: None, // already processed
-                            color,
-                            depends_on,
-                            healthcheck,
-                            tasks: svc_tasks,
-                            watch,
-                            requirements,
-                        });
+                        services_map.insert(
+                            svc_name.to_string(),
+                            ServiceDef {
+                                command,
+                                working_dir,
+                                environment,
+                                env_file: None, // already processed
+                                color,
+                                depends_on,
+                                healthcheck,
+                                tasks: svc_tasks,
+                                watch,
+                                requirements,
+                            },
+                        );
 
                         seen_services.insert(svc_name.to_string(), group_name.clone());
                     }
@@ -870,11 +971,15 @@ fn load_config_recursive(
                             ))
                         })?;
 
-                        let tcmd = t.get("command").and_then(|v| v.as_str())
-                            .ok_or_else(|| ConfigError::generic(format!(
-                                "Task '{}.{}' in {} must have a 'command' field",
-                                group_name, tname, config_path
-                            )))?
+                        let tcmd = t
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                ConfigError::generic(format!(
+                                    "Task '{}.{}' in {} must have a 'command' field",
+                                    group_name, tname, config_path
+                                ))
+                            })?
                             .to_string();
 
                         let twd_raw = t.get("working_dir").and_then(|v| v.as_str())
@@ -887,8 +992,11 @@ fn load_config_recursive(
                         let mut tenv: Option<HashMap<String, String>> = None;
                         if let Some(env_val) = t.get("environment") {
                             if let Some(env_map) = env_val.as_mapping() {
-                                let map: HashMap<String, serde_yaml::Value> = env_map.iter()
-                                    .filter_map(|(k, v)| k.as_str().map(|ks| (ks.to_string(), v.clone())))
+                                let map: HashMap<String, serde_yaml::Value> = env_map
+                                    .iter()
+                                    .filter_map(|(k, v)| {
+                                        k.as_str().map(|ks| (ks.to_string(), v.clone()))
+                                    })
                                     .collect();
                                 tenv = Some(normalize_env_values(&map));
                             }
@@ -906,23 +1014,40 @@ fn load_config_recursive(
                             }
                         }
 
-                        let tdesc = t.get("description").and_then(|v| v.as_str()).map(String::from);
+                        let tdesc = t
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
 
-                        tasks_map.insert(tname.to_string(), TaskDef {
-                            command: tcmd,
-                            working_dir: Some(twd),
-                            environment: tenv,
-                            env_file: None,
-                            description: tdesc,
-                        });
+                        tasks_map.insert(
+                            tname.to_string(),
+                            TaskDef {
+                                command: tcmd,
+                                working_dir: Some(twd),
+                                environment: tenv,
+                                env_file: None,
+                                description: tdesc,
+                            },
+                        );
                     }
                 }
             }
 
-            groups.insert(group_name.clone(), GroupDef {
-                services: if services_map.is_empty() { None } else { Some(services_map) },
-                tasks: if tasks_map.is_empty() { None } else { Some(tasks_map) },
-            });
+            groups.insert(
+                group_name.clone(),
+                GroupDef {
+                    services: if services_map.is_empty() {
+                        None
+                    } else {
+                        Some(services_map)
+                    },
+                    tasks: if tasks_map.is_empty() {
+                        None
+                    } else {
+                        Some(tasks_map)
+                    },
+                },
+            );
         }
     }
 
@@ -1018,7 +1143,9 @@ fn load_config_tree(root_path: &str) -> Result<(Config, String), ConfigError> {
     }
 
     Ok((
-        Config { groups: result.groups },
+        Config {
+            groups: result.groups,
+        },
         config_dir,
     ))
 }
@@ -1049,11 +1176,14 @@ pub fn build_service_lookup(config: &Config) -> HashMap<String, ResolvedService>
     for (group_name, group_def) in &config.groups {
         if let Some(services) = &group_def.services {
             for (svc_name, svc_def) in services {
-                lookup.insert(svc_name.clone(), ResolvedService {
-                    group: group_name.clone(),
-                    name: svc_name.clone(),
-                    def: svc_def.clone(),
-                });
+                lookup.insert(
+                    svc_name.clone(),
+                    ResolvedService {
+                        group: group_name.clone(),
+                        name: svc_name.clone(),
+                        def: svc_def.clone(),
+                    },
+                );
             }
         }
     }
@@ -1131,7 +1261,10 @@ pub fn get_all_tasks(config: &Config) -> Vec<ResolvedTask> {
                             service: Some(svc_name.clone()),
                             name: task_name.clone(),
                             command: task_def.command.clone(),
-                            working_dir: task_def.working_dir.clone().unwrap_or_else(|| svc_def.working_dir.clone()),
+                            working_dir: task_def
+                                .working_dir
+                                .clone()
+                                .unwrap_or_else(|| svc_def.working_dir.clone()),
                             environment: merged_env,
                             description: task_def.description.clone(),
                         });
@@ -1156,9 +1289,10 @@ pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigE
     }
 
     let group_name = parts[0];
-    let group_def = config.groups.get(group_name).ok_or_else(|| {
-        ConfigError::generic(format!("Unknown group '{}'", group_name))
-    })?;
+    let group_def = config
+        .groups
+        .get(group_name)
+        .ok_or_else(|| ConfigError::generic(format!("Unknown group '{}'", group_name)))?;
 
     if parts.len() == 2 {
         let task_name = parts[1];
@@ -1186,11 +1320,17 @@ pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigE
     let svc_name = parts[1];
     let task_name = parts[2];
 
-    let svc_def = group_def.services.as_ref()
+    let svc_def = group_def
+        .services
+        .as_ref()
         .and_then(|svcs| svcs.get(svc_name))
-        .ok_or_else(|| ConfigError::generic(format!("Unknown service '{}.{}'", group_name, svc_name)))?;
+        .ok_or_else(|| {
+            ConfigError::generic(format!("Unknown service '{}.{}'", group_name, svc_name))
+        })?;
 
-    let task_def = svc_def.tasks.as_ref()
+    let task_def = svc_def
+        .tasks
+        .as_ref()
         .and_then(|tasks| tasks.get(task_name))
         .ok_or_else(|| ConfigError::generic(format!("Unknown task '{}'", path)))?;
 
@@ -1209,7 +1349,10 @@ pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigE
         service: Some(svc_name.to_string()),
         name: task_name.to_string(),
         command: task_def.command.clone(),
-        working_dir: task_def.working_dir.clone().unwrap_or_else(|| svc_def.working_dir.clone()),
+        working_dir: task_def
+            .working_dir
+            .clone()
+            .unwrap_or_else(|| svc_def.working_dir.clone()),
         environment: merged_env,
         description: task_def.description.clone(),
     })
@@ -1225,9 +1368,10 @@ pub fn resolve_targets(
     if !group_names.is_empty() {
         let mut services = Vec::new();
         for group_name in group_names {
-            let group_def = config.groups.get(group_name).ok_or_else(|| {
-                ConfigError::generic(format!("Unknown group: {}", group_name))
-            })?;
+            let group_def = config
+                .groups
+                .get(group_name)
+                .ok_or_else(|| ConfigError::generic(format!("Unknown group: {}", group_name)))?;
             if let Some(svcs) = &group_def.services {
                 for (svc_name, svc_def) in svcs {
                     services.push(ResolvedService {
@@ -1244,9 +1388,9 @@ pub fn resolve_targets(
     if !service_names.is_empty() {
         let mut services = Vec::new();
         for name in service_names {
-            let resolved = lookup.get(name).ok_or_else(|| {
-                ConfigError::generic(format!("Unknown service: {}", name))
-            })?;
+            let resolved = lookup
+                .get(name)
+                .ok_or_else(|| ConfigError::generic(format!("Unknown service: {}", name)))?;
             services.push(resolved.clone());
         }
         return Ok(services);

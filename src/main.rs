@@ -218,8 +218,14 @@ enum Commands {
 
 /// Split comma-separated service names: ["api,worker", "db"] -> ["api", "worker", "db"]
 fn expand_csv(names: &[String]) -> Vec<String> {
-    names.iter()
-        .flat_map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+    names
+        .iter()
+        .flat_map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
         .collect()
 }
 
@@ -274,8 +280,20 @@ async fn main() {
         }
 
         // Task running
-        Commands::Run { tasks, parallel, list, group, pass_args }
-        | Commands::Task { tasks, parallel, list, group, pass_args } => {
+        Commands::Run {
+            tasks,
+            parallel,
+            list,
+            group,
+            pass_args,
+        }
+        | Commands::Task {
+            tasks,
+            parallel,
+            list,
+            group,
+            pass_args,
+        } => {
             let (config, _) = load_config(None).unwrap_or_else(|e| handle_config_error(e));
 
             if list {
@@ -290,7 +308,8 @@ async fn main() {
                 handle_error("Usage: rig run <task...> [-- args...] or rig tasks");
             }
 
-            let resolved: Vec<ResolvedTask> = tasks.iter()
+            let resolved: Vec<ResolvedTask> = tasks
+                .iter()
                 .map(|p| resolve_task(p, &config).unwrap_or_else(|e| handle_config_error(e)))
                 .collect();
 
@@ -319,12 +338,15 @@ async fn main() {
             }
 
             // Load config for service commands
-            let load_and_resolve = |services: &[String], groups: &[String]| -> Result<(Config, String, Vec<ResolvedService>), ConfigError> {
-                let (config, config_dir) = load_config(None)?;
-                let lookup = build_service_lookup(&config);
-                let targets = resolve_targets(&config, &lookup, services, groups)?;
-                Ok((config, config_dir, targets))
-            };
+            let load_and_resolve =
+                |services: &[String],
+                 groups: &[String]|
+                 -> Result<(Config, String, Vec<ResolvedService>), ConfigError> {
+                    let (config, config_dir) = load_config(None)?;
+                    let lookup = build_service_lookup(&config);
+                    let targets = resolve_targets(&config, &lookup, services, groups)?;
+                    Ok((config, config_dir, targets))
+                };
 
             match command {
                 Commands::Start { services, d, group } | Commands::Up { services, d, group } => {
@@ -361,24 +383,35 @@ async fn main() {
                     }
                 }
                 Commands::Ps { full, group } | Commands::List { full, group } => {
-                    let (_config, config_dir, targets) = load_and_resolve(&[], &group)
-                        .unwrap_or_else(|e| handle_config_error(e));
+                    let (_config, config_dir, targets) =
+                        load_and_resolve(&[], &group).unwrap_or_else(|e| handle_config_error(e));
                     let managers = create_managers(&targets, &config_dir);
                     cmd_ps(&managers, &targets, full).await;
                 }
                 Commands::Top { group } => {
-                    let (_config, config_dir, targets) = load_and_resolve(&[], &group)
-                        .unwrap_or_else(|e| handle_config_error(e));
+                    let (_config, config_dir, targets) =
+                        load_and_resolve(&[], &group).unwrap_or_else(|e| handle_config_error(e));
                     let managers = create_managers(&targets, &config_dir);
                     cmd_top(&managers, &targets).await;
                 }
-                Commands::Logs { services, f, prev, group }
-                | Commands::Tail { services, f, prev, group } => {
+                Commands::Logs {
+                    services,
+                    f,
+                    prev,
+                    group,
+                }
+                | Commands::Tail {
+                    services,
+                    f,
+                    prev,
+                    group,
+                } => {
                     let services = expand_csv(&services);
                     let (config, config_dir, targets) = if services.is_empty() {
                         load_and_resolve(&[], &group).unwrap_or_else(|e| handle_config_error(e))
                     } else {
-                        load_and_resolve(&services, &group).unwrap_or_else(|e| handle_config_error(e))
+                        load_and_resolve(&services, &group)
+                            .unwrap_or_else(|e| handle_config_error(e))
                     };
                     let all_services = get_all_services(&config);
                     let managers = create_managers(&targets, &config_dir);
@@ -386,12 +419,18 @@ async fn main() {
                         handle_error(&e);
                     }
                 }
-                Commands::Config { services, raw, json, group } => {
+                Commands::Config {
+                    services,
+                    raw,
+                    json,
+                    group,
+                } => {
                     let services = expand_csv(&services);
                     let (config, _config_dir, targets) = if services.is_empty() {
                         load_and_resolve(&[], &group).unwrap_or_else(|e| handle_config_error(e))
                     } else {
-                        load_and_resolve(&services, &group).unwrap_or_else(|e| handle_config_error(e))
+                        load_and_resolve(&services, &group)
+                            .unwrap_or_else(|e| handle_config_error(e))
                     };
                     let all_services = get_all_services(&config);
                     cmd_config(&config, &targets, &all_services, raw, json);

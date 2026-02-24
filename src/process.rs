@@ -7,7 +7,7 @@ use regex::Regex;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::config::{ResolvedService, RequirementDef, ServiceDef, WatchDef, LOG_DIR};
+use crate::config::{RequirementDef, ResolvedService, ServiceDef, WatchDef, LOG_DIR};
 use crate::output::{c, log, log_system, log_verbose, print, strip_control_codes, SERVICE_COLORS};
 
 // ============================================================================
@@ -65,9 +65,8 @@ pub async fn get_process_tree(root_pid: u32) -> Vec<u32> {
     all_pids.into_iter().collect()
 }
 
-static PORT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r":(\d+)\s+\(LISTEN\)").expect("port regex is valid")
-});
+static PORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":(\d+)\s+\(LISTEN\)").expect("port regex is valid"));
 
 pub async fn get_process_metrics(root_pid: u32) -> ProcessMetrics {
     let pids = get_process_tree(root_pid).await;
@@ -95,11 +94,7 @@ pub async fn get_process_metrics(root_pid: u32) -> ProcessMetrics {
         }
 
         // Get listening ports via lsof
-        if let Ok(output) = Command::new("lsof")
-            .args(["-i", "-P", "-n"])
-            .output()
-            .await
-        {
+        if let Ok(output) = Command::new("lsof").args(["-i", "-P", "-n"]).output().await {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let pid_set: HashSet<String> = pid_strs.into_iter().collect();
 
@@ -155,8 +150,30 @@ pub fn print_tmux_install_guide() {
 
 fn shell_quote(s: &str) -> String {
     if s.contains(|c: char| {
-        matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '$' | '`' | '"' | '\'' | '\\' | '!' |
-                 '<' | '>' | '|' | ';' | '&' | '(' | ')' | ' ' | '\t' | '\n')
+        matches!(
+            c,
+            '*' | '?'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '$'
+                | '`'
+                | '"'
+                | '\''
+                | '\\'
+                | '!'
+                | '<'
+                | '>'
+                | '|'
+                | ';'
+                | '&'
+                | '('
+                | ')'
+                | ' '
+                | '\t'
+                | '\n'
+        )
     }) {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
@@ -168,7 +185,11 @@ fn build_watchexec_command(command: &str, watch: &WatchDef, working_dir: &str) -
     let mut args = Vec::new();
 
     let paths = if let Some(ref p) = watch.paths {
-        if p.is_empty() { vec![working_dir.to_string()] } else { p.clone() }
+        if p.is_empty() {
+            vec![working_dir.to_string()]
+        } else {
+            p.clone()
+        }
     } else {
         vec![working_dir.to_string()]
     };
@@ -269,8 +290,12 @@ pub async fn check_requirements(
             check_cmd.envs(env);
         }
 
-        let check_result = check_cmd.output().await
-            .map_err(|e| format!("Failed to run requirement check '{}' for {}: {}", req.check, service, e))?;
+        let check_result = check_cmd.output().await.map_err(|e| {
+            format!(
+                "Failed to run requirement check '{}' for {}: {}",
+                req.check, service, e
+            )
+        })?;
 
         if check_result.status.success() {
             continue;
@@ -286,7 +311,9 @@ pub async fn check_requirements(
             if let Some(env) = environment {
                 recheck.envs(env);
             }
-            let recheck_result = recheck.output().await
+            let recheck_result = recheck
+                .output()
+                .await
                 .map_err(|e| format!("Failed to recheck requirement for {}: {}", service, e))?;
             if recheck_result.status.success() {
                 continue;
@@ -298,7 +325,10 @@ pub async fn check_requirements(
         }
 
         // Run remediation
-        log_system(&format!("{}: requirement '{}' not met, running '{}'", service, req.check, req.command));
+        log_system(&format!(
+            "{}: requirement '{}' not met, running '{}'",
+            service, req.check, req.command
+        ));
         let mut remediate = Command::new("sh");
         remediate.args(["-c", &req.command]);
         remediate.current_dir(working_dir);
@@ -308,8 +338,12 @@ pub async fn check_requirements(
             remediate.envs(env);
         }
 
-        let remediate_result = remediate.output().await
-            .map_err(|e| format!("Failed to run remediation '{}' for {}: {}", req.command, service, e))?;
+        let remediate_result = remediate.output().await.map_err(|e| {
+            format!(
+                "Failed to run remediation '{}' for {}: {}",
+                req.command, service, e
+            )
+        })?;
 
         if !remediate_result.status.success() {
             return Err(format!(
@@ -403,7 +437,10 @@ impl SessionManager {
         if self.exists(service).await {
             let status = self.status(service).await;
             if status.running {
-                log_system(&format!("{} is already running (pid {:?})", service, status.pid));
+                log_system(&format!(
+                    "{} is already running (pid {:?})",
+                    service, status.pid
+                ));
                 return Ok(());
             }
             // Dead session, kill it first
@@ -413,7 +450,14 @@ impl SessionManager {
         // Check requirements
         if let Some(reqs) = &def.requirements {
             if !reqs.is_empty() {
-                check_requirements(service, reqs, &def.working_dir, &def.environment, remediated).await?;
+                check_requirements(
+                    service,
+                    reqs,
+                    &def.working_dir,
+                    &def.environment,
+                    remediated,
+                )
+                .await?;
             }
         }
 
@@ -445,7 +489,15 @@ impl SessionManager {
 
         // Create tmux session
         let result = Command::new("tmux")
-            .args(["new-session", "-d", "-s", &session, "-c", &def.working_dir, &cmd])
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "-c",
+                &def.working_dir,
+                &cmd,
+            ])
             .output()
             .await
             .map_err(|e| format!("Failed to create tmux session for {}: {}", service, e))?;
@@ -461,25 +513,40 @@ impl SessionManager {
             .output()
             .await
         {
-            log_verbose(&format!("Failed to set remain-on-exit for {}: {}", service, e));
+            log_verbose(&format!(
+                "Failed to set remain-on-exit for {}: {}",
+                service, e
+            ));
         }
 
         // Set up log file
         self.rotate_log(service).await;
         let log_file = self.log_file(service, false);
         if let Err(e) = Command::new("tmux")
-            .args(["pipe-pane", "-t", &session, "-o", &format!("cat >> \"{}\"", log_file)])
+            .args([
+                "pipe-pane",
+                "-t",
+                &session,
+                "-o",
+                &format!("cat >> \"{}\"", log_file),
+            ])
             .output()
             .await
         {
-            log_verbose(&format!("Failed to set up pipe-pane for {}: {}", service, e));
+            log_verbose(&format!(
+                "Failed to set up pipe-pane for {}: {}",
+                service, e
+            ));
         }
 
         // Capture any output before pipe-pane was set up
         let existing = self.capture_pane(service).await;
         if !existing.trim().is_empty() {
             if let Err(e) = tokio::fs::write(&log_file, &existing).await {
-                log_verbose(&format!("Failed to write pre-pipe output for {}: {}", service, e));
+                log_verbose(&format!(
+                    "Failed to write pre-pipe output for {}: {}",
+                    service, e
+                ));
             }
         }
 
@@ -550,7 +617,10 @@ impl SessionManager {
 
         let output = Command::new("tmux")
             .args([
-                "display-message", "-t", &session, "-p",
+                "display-message",
+                "-t",
+                &session,
+                "-p",
                 "#{pane_pid}:#{pane_dead}:#{pane_dead_status}:#{session_created}",
             ])
             .output()
@@ -563,7 +633,11 @@ impl SessionManager {
                 if parts.len() >= 4 {
                     let pid = parts[0].parse::<u32>().ok();
                     let dead = parts[1] == "1";
-                    let exit_code = if dead { parts[2].parse::<i32>().ok() } else { None };
+                    let exit_code = if dead {
+                        parts[2].parse::<i32>().ok()
+                    } else {
+                        None
+                    };
                     let created = parts[3].parse::<u64>().ok();
 
                     SessionStatus {
@@ -599,7 +673,8 @@ impl SessionManager {
     pub async fn list_all(&self) -> Vec<SessionStatus> {
         let output = Command::new("tmux")
             .args([
-                "list-sessions", "-F",
+                "list-sessions",
+                "-F",
                 "#{session_name}:#{pane_pid}:#{pane_dead}:#{pane_dead_status}:#{session_created}",
             ])
             .output()
@@ -621,7 +696,11 @@ impl SessionManager {
                             let name = parts[0].strip_prefix(&prefix)?.to_string();
                             let pid = parts[1].parse::<u32>().ok();
                             let dead = parts[2] == "1";
-                            let exit_code = if dead { parts[3].parse::<i32>().ok() } else { None };
+                            let exit_code = if dead {
+                                parts[3].parse::<i32>().ok()
+                            } else {
+                                None
+                            };
                             let created = parts[4].parse::<u64>().ok();
                             Some(SessionStatus {
                                 name,
@@ -766,10 +845,14 @@ pub fn get_service_color(all_services: &[ResolvedService], service_name: &str) -
 // FACTORY HELPERS
 // ============================================================================
 
-pub fn create_managers(targets: &[ResolvedService], config_dir: &str) -> HashMap<String, SessionManager> {
+pub fn create_managers(
+    targets: &[ResolvedService],
+    config_dir: &str,
+) -> HashMap<String, SessionManager> {
     let mut managers = HashMap::new();
     for target in targets {
-        managers.entry(target.group.clone())
+        managers
+            .entry(target.group.clone())
             .or_insert_with(|| SessionManager::new(&target.group, config_dir));
     }
     managers

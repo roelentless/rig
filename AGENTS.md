@@ -180,6 +180,8 @@ cargo install --path .         # Install to ~/.cargo/bin
 ./rig-dev ps                   # Build + run in one step (dev wrapper)
 ```
 
+**Before committing**, run `cargo fmt` to auto-format all source files. CI enforces `cargo fmt --check` and will reject unformatted code.
+
 The `rig-dev` script builds from the source tree and runs the debug binary, so your working directory's `rig.yaml` is used while the binary comes from the source checkout.
 
 ## Documentation
