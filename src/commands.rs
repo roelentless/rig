@@ -912,59 +912,44 @@ pub async fn cmd_init() -> Result<(), String> {
 // DISCOVERY
 // ============================================================================
 
-async fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
-    let fd_exists = Command::new("which")
-        .arg("fd")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
+    let pattern = regex::Regex::new(r"(^rig\.ya?ml$|.*\.rig\.yaml$)").unwrap();
 
-    if !fd_exists {
-        return Err(format!(
-            "\n{}Error: fd is not installed{}\n\nfd is required for fast, gitignore-aware file scanning.\n\nInstall:\n  macOS:         brew install fd\n  Ubuntu/Debian: sudo apt install fd-find\n  Arch:          sudo pacman -S fd\n",
-            c("red"), c("reset")
-        ));
+    let mut builder = ignore::WalkBuilder::new(root_dir);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(false);
+
+    let mut overrides = ignore::overrides::OverrideBuilder::new(root_dir);
+    for dir in [
+        "node_modules",
+        ".git",
+        "vendor",
+        ".rig",
+        "__pycache__",
+        ".venv",
+        "dist",
+        "build",
+    ] {
+        overrides
+            .add(&format!("!{}/**", dir))
+            .map_err(|e| e.to_string())?;
     }
+    builder.overrides(overrides.build().map_err(|e| e.to_string())?);
 
-    let output = Command::new("fd")
-        .args([
-            "--type",
-            "f",
-            "--hidden",
-            "--exclude",
-            "node_modules",
-            "--exclude",
-            ".git",
-            "--exclude",
-            "vendor",
-            "--exclude",
-            ".rig",
-            "--exclude",
-            "__pycache__",
-            "--exclude",
-            ".venv",
-            "--exclude",
-            "dist",
-            "--exclude",
-            "build",
-            r"(^rig\.ya?ml$|.*\.rig\.yaml$)",
-            root_dir,
-        ])
-        .output()
-        .await;
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if stdout.is_empty() {
-                Ok(Vec::new())
-            } else {
-                Ok(stdout.lines().map(String::from).collect())
+    let mut results = Vec::new();
+    for entry in builder.build().flatten() {
+        if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            let name = entry.file_name().to_string_lossy();
+            if pattern.is_match(&name) {
+                results.push(entry.path().to_string_lossy().to_string());
             }
         }
-        _ => Ok(Vec::new()),
     }
+    Ok(results)
 }
 
 pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> Result<(), String> {
@@ -977,7 +962,7 @@ pub async fn cmd_discover(root_dir: &str, dry_run: bool, auto_accept: bool) -> R
 
     print(&format!("Scanning from {}...\n", abs_root));
 
-    let mut all_files = scan_for_rig_files(&abs_root).await?;
+    let mut all_files = scan_for_rig_files(&abs_root)?;
     if all_files.is_empty() {
         print("No rig files found.");
         return Ok(());

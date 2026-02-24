@@ -43,9 +43,11 @@
 ### Installer (`install.sh`)
 
 - POSIX `sh` only, no bashisms — the script is piped via `curl | sh`
+- `curl` is required and checked immediately — hard error if missing (curl must exist to fetch the installer anyway)
 - Downloads prebuilt binary from GitHub Releases (`rig-{platform}-{arch}.tar.gz`)
 - tmux is **required** (hard error if missing, no auto-install)
-- fd and watchexec are **optional** (noted as skip, not error)
+- watchexec is **optional** — installed via `curl https://webi.sh/watchexec | sh` (their own installer handles all platform/arch logic); macOS prefers `brew`, falls back to webi
+- Do not use `.tar.xz` for anything — watchexec has no `.tar.gz` release so we delegate to webi instead of handling archives ourselves
 - Transparency pattern: check deps → show plan → ask user → download binary
 - Read user input when stdin is a pipe: redirect from `/dev/tty`
 - Install location: `~/.local/bin` on Linux, `/usr/local/bin` on macOS
@@ -60,7 +62,7 @@
 - Glob patterns need shell quoting (`shellQuote()`) to prevent shell expansion
 - Full delegation to watchexec - no rig-specific defaults or remapping
 - Check watchexec installed before starting service (`requireWatchexec()`)
-- All runtime dependency errors (tmux, fd, watchexec) point to the installer URL as first option
+- All runtime dependency errors (tmux, watchexec) point to the installer URL as first option
 
 ### Requirements (pre-start checks)
 
@@ -83,7 +85,7 @@
 
 - Path normalization uses URL class: `new URL(path, "file:///").pathname` - cleaner than manual string manipulation
 - Circular import detection needs normalized absolute paths to work correctly
-- When using `fd` for file discovery, respect .gitignore to avoid pulling in rig files from dependencies
+- File discovery respects .gitignore (via `ignore` crate) to avoid pulling in rig files from dependencies
 - Deduplication must happen by absolute normalized path, not relative path
 - Path expansion must happen per-file before merging (each config's paths relative to its own location)
 - `LoadContext` pattern works well: track `configPath`, `configDir`, `loaded` Set, and `importChain` for recursion
@@ -152,7 +154,7 @@ Module dependency graph (strict DAG):
 
 install.sh:
   Platform detection     → OS, arch
-  Dependency check       → tmux (required), fd/watchexec (optional)
+  Dependency check       → tmux (required), watchexec (optional)
   Binary download        → GitHub Releases tarball
   PATH verification      → check install dir is in PATH
 ```

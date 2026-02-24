@@ -59,13 +59,19 @@ curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh 
 
 Downloads a prebuilt binary from GitHub Releases. Checks prerequisites, shows the plan, asks before running. Safe to re-run for upgrades.
 
+The installer will offer to install [watchexec](https://github.com/watchexec/watchexec) (optional, for file watching). To include it non-interactively:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh -s -- --with-watchexec
+```
+
 ### Manual install
 
-**Prerequisites:** tmux (required), fd (optional, for `rig discover`), watchexec (optional, for file watching)
+**Prerequisites:** tmux (required), watchexec (optional, for file watching)
 
 ```bash
 # macOS
-brew install tmux
+brew install tmux watchexec
 
 # Linux (Debian/Ubuntu)
 sudo apt install tmux
@@ -75,6 +81,9 @@ sudo dnf install tmux
 
 # Linux (Arch)
 sudo pacman -S tmux
+
+# watchexec (all Linux distros, optional)
+curl https://webi.sh/watchexec | sh
 ```
 
 **Download the binary** from [GitHub Releases](https://github.com/roelentless/rig/releases) and place it in your PATH:

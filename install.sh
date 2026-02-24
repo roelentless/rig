@@ -32,6 +32,12 @@ err()  { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; }
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# curl is required to fetch releases - abort immediately if missing
+if ! has curl; then
+  printf "  curl is required but not installed.\n" >&2
+  exit 1
+fi
+
 # Prompt Y/n - reads from /dev/tty when stdin is a pipe
 prompt_yn() {
   if [ "${AUTO_YES}" = true ]; then return 0; fi
@@ -111,10 +117,9 @@ get_installed_version() {
 # ============================================================================
 
 check_deps() {
-  HAS_TMUX=false; HAS_FD=false; HAS_WATCHEXEC=false; HAS_RIG=false
+  HAS_TMUX=false; HAS_WATCHEXEC=false; HAS_RIG=false
 
   has tmux                      && HAS_TMUX=true
-  { has fd || has fdfind; }     && HAS_FD=true
   has watchexec                 && HAS_WATCHEXEC=true
   has rig                       && HAS_RIG=true
 }
@@ -128,16 +133,59 @@ show_status() {
     miss "tmux" "(required) terminal multiplexer"
   fi
 
-  if $HAS_FD; then
-    ok "fd"
-  else
-    skip "fd" "(optional) fast file finder for discover"
-  fi
-
   if $HAS_WATCHEXEC; then
     ok "watchexec"
   else
     skip "watchexec" "(optional) file watcher for auto-restart"
+  fi
+}
+
+# ============================================================================
+# watchexec install
+# ============================================================================
+
+WE_REPO="watchexec/watchexec"
+
+
+install_watchexec() {
+  # macOS: prefer brew when available
+  if [ "$PLATFORM" = "macos" ] && has brew; then
+    info "Installing watchexec via Homebrew..."
+    if brew install watchexec; then
+      ok "watchexec installed via Homebrew"
+      return 0
+    else
+      warn "brew install failed, falling back to webi..."
+    fi
+  fi
+
+  info "Installing watchexec via webi..."
+  if curl -fsSL https://webi.sh/watchexec | sh >/dev/null 2>&1; then
+    ok "watchexec installed"
+  else
+    err "watchexec install failed."
+    err "Install manually: https://github.com/${WE_REPO}/releases"
+    return 1
+  fi
+}
+
+maybe_install_watchexec() {
+  if $HAS_WATCHEXEC; then return; fi
+
+  echo ""
+  if [ "$INSTALL_WATCHEXEC" = true ]; then
+    install_watchexec
+  elif [ "$AUTO_YES" != true ]; then
+    if prompt_yn "  Install watchexec? (optional, enables file watching) [Y/n] "; then
+      install_watchexec
+    else
+      info "Skipped. Install later:"
+      if [ "$PLATFORM" = "macos" ] && has brew; then
+        info "  brew install watchexec"
+      else
+        info "  https://github.com/${WE_REPO}/releases"
+      fi
+    fi
   fi
 }
 
@@ -162,6 +210,7 @@ install_rig() {
     if [ "$CURRENT" = "$LATEST" ]; then
       printf "\n"
       ok "rig ${CURRENT} is already up to date"
+      maybe_install_watchexec
       printf "\n"
       exit 0
     fi
@@ -253,15 +302,18 @@ add_to_profile() {
 
 main() {
   AUTO_YES=false
+  INSTALL_WATCHEXEC=false
   for arg in "$@"; do
     case "$arg" in
       -y|--yes) AUTO_YES=true ;;
+      --with-watchexec) INSTALL_WATCHEXEC=true ;;
       -h|--help)
         printf "rig installer\n\n"
         printf "Usage: curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh\n\n"
         printf "Options:\n"
-        printf "  -y, --yes    Skip confirmation prompt\n"
-        printf "  -h, --help   Show this help\n"
+        printf "  -y, --yes          Skip confirmation prompt\n"
+        printf "  --with-watchexec   Also install watchexec (file watcher)\n"
+        printf "  -h, --help         Show this help\n"
         exit 0
         ;;
     esac
@@ -309,6 +361,7 @@ main() {
   echo ""
   install_rig
   verify_path
+  maybe_install_watchexec
 
   printf "\n"
   ok "Done!"

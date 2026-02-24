@@ -368,7 +368,7 @@ fn check_watchexec_installed() -> Result<(), String> {
     match output {
         Ok(o) if o.status.success() => Ok(()),
         _ => Err(format!(
-            "\n{}Error: watchexec is not installed{}\n\nwatchexec is required for file watching.\n\nInstall:\n  macOS:  brew install watchexec\n  Arch:   sudo pacman -S watchexec\n  Other:  https://github.com/watchexec/watchexec/releases\n",
+            "\n{}Error: watchexec is not installed{}\n\nwatchexec is required for file watching.\n\nInstall:\n  Installer: curl -fsSL https://raw.githubusercontent.com/roelentless/rig/develop/install.sh | sh -s -- --with-watchexec\n  macOS:     brew install watchexec\n  Arch:      sudo pacman -S watchexec\n  Other:     https://github.com/watchexec/watchexec/releases\n",
             c("red"), c("reset")
         )),
     }
