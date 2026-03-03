@@ -305,7 +305,11 @@ async fn main() {
             }
 
             if tasks.is_empty() {
-                handle_error("Usage: rig run <task...> [-- args...] or rig tasks");
+                let group_filter = group.first().map(|s| s.as_str());
+                if let Err(e) = cmd_task_list(&config, group_filter) {
+                    handle_error(&e);
+                }
+                return;
             }
 
             let resolved: Vec<ResolvedTask> = tasks

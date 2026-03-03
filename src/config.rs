@@ -1281,7 +1281,25 @@ pub fn get_all_tasks(config: &Config) -> Vec<ResolvedTask> {
 pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigError> {
     let parts: Vec<&str> = path.split('.').collect();
 
-    if parts.len() < 2 || parts.len() > 3 {
+    if parts.len() == 1 {
+        // Short name: resolve if unambiguous
+        let all = get_all_tasks(config);
+        let matches: Vec<_> = all.into_iter().filter(|t| t.name == path).collect();
+        return match matches.len() {
+            0 => Err(ConfigError::generic(format!("Unknown task '{}'", path))),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            _ => {
+                let paths: Vec<_> = matches.iter().map(|t| t.path.as_str()).collect();
+                Err(ConfigError::generic(format!(
+                    "Ambiguous task '{}'. Matches: {}",
+                    path,
+                    paths.join(", ")
+                )))
+            }
+        };
+    }
+
+    if parts.len() > 3 {
         return Err(ConfigError::generic(format!(
             "Invalid task path '{}'. Use 'group.task' or 'group.service.task'",
             path

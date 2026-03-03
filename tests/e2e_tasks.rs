@@ -255,6 +255,74 @@ fn run_parallel_continues_on_failure() {
 }
 
 #[test]
+fn run_no_args_lists_tasks() {
+    let ctx = TestContext::new();
+    ctx.setup_test_config();
+    let result = ctx.rig(&["run"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(
+        clean.contains(&format!("{}.group-cmd", TEST_GROUP)),
+        "stdout: {}",
+        clean
+    );
+}
+
+#[test]
+fn run_short_name_unique() {
+    let ctx = TestContext::new();
+    ctx.setup_test_config();
+    let result = ctx.rig(&["run", "group-cmd"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("group command output"),
+        "stdout: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn run_short_name_ambiguous() {
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  alpha:
+    tasks:
+      deploy:
+        command: echo "alpha deploy"
+        working_dir: /tmp
+  beta:
+    tasks:
+      deploy:
+        command: echo "beta deploy"
+        working_dir: /tmp
+"#,
+    );
+    let result = ctx.rig(&["run", "deploy"]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("Ambiguous task 'deploy'"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn run_short_name_unknown() {
+    let ctx = TestContext::new();
+    ctx.setup_test_config();
+    let result = ctx.rig(&["run", "nonexistent"]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("Unknown task 'nonexistent'"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
 fn run_multiple_with_args_errors() {
     let ctx = TestContext::new();
     ctx.setup_test_config();
