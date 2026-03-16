@@ -186,6 +186,28 @@ cargo install --path .         # Install to ~/.cargo/bin
 
 The `rig-dev` script builds from the source tree and runs the debug binary, so your working directory's `rig.yaml` is used while the binary comes from the source checkout.
 
+## Changelog
+
+`CHANGELOG.md` at project root.
+
+**Granularity: one entry per feature, not per commit or internal refactor.** A new command, a new config key, a bugfix, an install improvement — those get entries. Internal restructuring that users can't see does not.
+
+**Scope: user-visible impact only.** Describe what changed in experience, not how it was built. No internal identifiers, struct names, or implementation details.
+
+**Style rules:**
+- Max ~80 chars per entry
+- Prefix with type: `feature:`, `bugfix:`, `improvement:`
+- Date-based sections, no "Unreleased": `## YYYY-MM-DD`
+- Latest date on top; latest entry on top within a date
+- If today's section doesn't exist yet, add it above the previous one
+
+```markdown
+## 2026-03-16
+
+- feature: short task names — `rig run deploy` works when the name is unambiguous
+- bugfix: PATH entry uses `~/.zshenv` — works in editors and non-interactive shells
+```
+
 ## Documentation
 
 **Keep README.md in sync with command output**: When modifying commands or their output, always run `rig -h` and update the Commands section in README.md to match the exact output. The README should reflect what users see when they run the help command.
@@ -237,8 +259,33 @@ test/
 
 Each test file uses `TestContext` from `common/mod.rs` which handles temp directory creation, writing test configs, running the rig binary, and tmux session cleanup.
 
+### Makefile Provider
+
+Groups support a `working_dir` field. When set, a `Makefile` in that directory is automatically discovered and its `.PHONY` targets become tasks under the group namespace.
+
+- Target discovery: `.PHONY` targets only. Falls back to `## target: description` documented targets when no `.PHONY` is declared.
+- Descriptions: extracted from `## target: description` comment lines (must be non-indented, at column 0).
+- Commands: `make <target>` for standard `Makefile`; `make -f <filename> <target>` for non-standard filenames.
+- Rigfile tasks always override Makefile targets on name collision (rigfile is authoritative).
+- Explicit extra Makefiles via `makefiles:` list (deduplicated against auto-discovered).
+- `working_dir` also serves as the default `working_dir` for group-level tasks that don't specify one.
+
+```yaml
+groups:
+  backend:
+    working_dir: ./backend   # auto-discovers ./backend/Makefile; tasks inherit this dir
+    makefiles:
+      - ./tools/ci.mk        # additional explicit Makefile
+    services:
+      api: { command: go run ., working_dir: ./backend }
+    tasks:
+      deploy: { command: ./scripts/deploy.sh }   # inherits working_dir from group
+```
+
+The provider model is designed for extension: `services`, `tasks`, and `makefiles` are named providers within a group. Future providers (e.g., `npm-scripts`, `justfile`) follow the same pattern.
+
 ## Future Considerations
 
-- Group-level settings (shared env, working_dir defaults)
 - Import globs: `imports: ["services/*/rig.yaml"]`
 - `rig discover --watch` for continuous import updates
+- Additional task providers: npm scripts, Justfile, etc.

@@ -96,6 +96,8 @@ pub struct ServiceDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GroupDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
     pub services: Option<HashMap<String, ServiceDef>>,
     pub tasks: Option<HashMap<String, TaskDef>>,
 }
@@ -151,7 +153,9 @@ fn root_keys() -> HashSet<&'static str> {
     ["imports", "groups"].into_iter().collect()
 }
 fn group_keys() -> HashSet<&'static str> {
-    ["services", "tasks"].into_iter().collect()
+    ["services", "tasks", "working_dir", "makefiles"]
+        .into_iter()
+        .collect()
 }
 fn service_keys() -> HashSet<&'static str> {
     [
@@ -567,6 +571,69 @@ pub fn find_nearest_config(start_dir: &Path) -> Result<PathBuf, ConfigError> {
     ))
 }
 
+/// Parse a Makefile and return (target_name, description) for public targets.
+///
+/// Public targets are those listed in `.PHONY`. If no `.PHONY` is declared,
+/// falls back to targets with `## target: description` comments.
+/// Descriptions are extracted from `## target: description` comment lines
+/// that appear anywhere in the file.
+fn parse_makefile(path: &Path) -> Vec<(String, Option<String>)> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    // Collect .PHONY targets (handles multiple .PHONY declarations)
+    let mut phony: HashSet<String> = HashSet::new();
+    for line in content.lines() {
+        if let Some(rest) = line.trim().strip_prefix(".PHONY:") {
+            for target in rest.split_whitespace() {
+                phony.insert(target.to_string());
+            }
+        }
+    }
+
+    // Collect ## target: description comments.
+    // Only match non-indented lines (## at column 0) to skip continuation comments.
+    let mut descriptions: HashMap<String, String> = HashMap::new();
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            // rest must start with the target name directly (no leading whitespace)
+            if !rest.starts_with(' ') && !rest.starts_with('\t') {
+                if let Some(colon_pos) = rest.find(':') {
+                    let target = rest[..colon_pos].trim().to_string();
+                    let desc = rest[colon_pos + 1..].trim().to_string();
+                    // Valid make target names: no spaces
+                    if !target.is_empty() && !target.contains(' ') {
+                        descriptions.insert(target, desc);
+                    }
+                }
+            }
+        }
+    }
+
+    let candidates: Vec<String> = if phony.is_empty() {
+        // No .PHONY — expose only targets documented with ## comments
+        descriptions.keys().cloned().collect()
+    } else {
+        // Expose .PHONY targets, skipping internal ones (leading . or _)
+        phony
+            .into_iter()
+            .filter(|t| !t.starts_with('.') && !t.starts_with('_'))
+            .collect()
+    };
+
+    let mut result: Vec<(String, Option<String>)> = candidates
+        .into_iter()
+        .map(|name| {
+            let desc = descriptions.get(&name).cloned();
+            (name, desc)
+        })
+        .collect();
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
 /// Context for recursive config loading
 struct LoadContext {
     loaded: HashSet<String>,
@@ -668,18 +735,98 @@ fn load_config_recursive(
                 ))
             })?;
 
+            // Parse group-level working_dir (used as default for tasks and Makefile discovery)
+            let group_working_dir = if let Some(wd_val) = group_map.get("working_dir") {
+                let wd_str = wd_val.as_str().ok_or_else(|| {
+                    ConfigError::generic(format!(
+                        "Group '{}' in {}: 'working_dir' must be a string",
+                        group_name, config_path
+                    ))
+                })?;
+                Some(resolve_path(wd_str, config_dir))
+            } else {
+                None
+            };
+
             let has_services = group_map.get("services").is_some();
             let has_tasks = group_map.get("tasks").is_some();
+            let has_makefiles = group_map.get("makefiles").is_some();
 
-            if !has_services && !has_tasks {
+            if !has_services && !has_tasks && !has_makefiles && group_working_dir.is_none() {
                 return Err(ConfigError::generic(format!(
-                    "Group '{}' in {} must have 'services' and/or 'tasks'",
+                    "Group '{}' in {} must have 'services', 'tasks', 'makefiles', or 'working_dir'",
                     group_name, config_path
                 )));
             }
 
             let mut services_map: HashMap<String, ServiceDef> = HashMap::new();
             let mut tasks_map: HashMap<String, TaskDef> = HashMap::new();
+
+            // Load Makefile tasks. Rigfile tasks (parsed below) override on name conflict.
+            {
+                let mut makefile_paths: Vec<PathBuf> = Vec::new();
+
+                // Auto-discover: Makefile in group's working_dir
+                if let Some(ref gwd) = group_working_dir {
+                    let auto = PathBuf::from(gwd).join("Makefile");
+                    if auto.exists() {
+                        makefile_paths.push(auto);
+                    }
+                }
+
+                // Explicit makefiles list
+                if let Some(mf_val) = group_map.get("makefiles") {
+                    if let Some(seq) = mf_val.as_sequence() {
+                        for item in seq {
+                            if let Some(s) = item.as_str() {
+                                let resolved = PathBuf::from(resolve_path(s, config_dir));
+                                if !makefile_paths.contains(&resolved) {
+                                    makefile_paths.push(resolved);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for makefile_path in &makefile_paths {
+                    if !makefile_path.exists() {
+                        return Err(ConfigError::generic(format!(
+                            "Makefile not found: {} (group '{}', {})",
+                            makefile_path.display(),
+                            group_name,
+                            config_path
+                        )));
+                    }
+                    let makefile_dir = makefile_path
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ".".to_string());
+
+                    // Use `make -f <name>` for non-standard filenames so make can find the file
+                    let filename = makefile_path
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Makefile".to_string());
+                    let make_prefix = if filename == "Makefile"
+                        || filename == "makefile"
+                        || filename == "GNUmakefile"
+                    {
+                        "make".to_string()
+                    } else {
+                        format!("make -f {}", filename)
+                    };
+
+                    for (target_name, description) in parse_makefile(makefile_path) {
+                        tasks_map.entry(target_name.clone()).or_insert(TaskDef {
+                            command: format!("{} {}", make_prefix, target_name),
+                            working_dir: Some(makefile_dir.clone()),
+                            environment: None,
+                            env_file: None,
+                            description,
+                        });
+                    }
+                }
+            }
 
             // Parse services
             if let Some(services_val) = group_map.get("services") {
@@ -982,12 +1129,15 @@ fn load_config_recursive(
                             })?
                             .to_string();
 
-                        let twd_raw = t.get("working_dir").and_then(|v| v.as_str())
-                            .ok_or_else(|| ConfigError::generic(format!(
-                                "Task '{}.{}' in {} must have a 'working_dir' field (group-level tasks cannot inherit)",
-                                group_name, tname, config_path
-                            )))?;
-                        let twd = resolve_path(twd_raw, config_dir);
+                        let twd = match t.get("working_dir").and_then(|v| v.as_str()) {
+                            Some(wd) => resolve_path(wd, config_dir),
+                            None => group_working_dir.clone().ok_or_else(|| {
+                                ConfigError::generic(format!(
+                                    "Task '{}.{}' in {} must have a 'working_dir' field (no group-level working_dir set)",
+                                    group_name, tname, config_path
+                                ))
+                            })?,
+                        };
 
                         let mut tenv: Option<HashMap<String, String>> = None;
                         if let Some(env_val) = t.get("environment") {
@@ -1036,6 +1186,7 @@ fn load_config_recursive(
             groups.insert(
                 group_name.clone(),
                 GroupDef {
+                    working_dir: group_working_dir,
                     services: if services_map.is_empty() {
                         None
                     } else {

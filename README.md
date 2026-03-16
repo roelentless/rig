@@ -128,7 +128,7 @@ groups:
     tasks:                               # Group-level tasks
       deploy:
         command: ./scripts/deploy.sh
-        working_dir: .
+        # working_dir: .               # Optional if group has working_dir
         description: Deploy backend
 
   frontend:
@@ -232,11 +232,13 @@ Service names must be unique across all groups.
 
 ### Tasks
 
-Tasks can be defined at the group level or service level:
+Tasks can be defined at the group level, service level, or sourced from a Makefile:
 
 ```yaml
 groups:
   backend:
+    working_dir: ./backend           # Optional. Default working_dir for all group tasks
+
     services:
       api:
         # ... service config ...
@@ -252,14 +254,78 @@ groups:
     tasks:                           # Group-level: standalone
       deploy:
         command: ./scripts/deploy.sh
-        working_dir: .               # Required for group tasks
+        # working_dir omitted — inherits from group's working_dir
         description: Deploy backend
 ```
 
 - **Service tasks** inherit `working_dir` and `environment` from their parent service
-- **Group tasks** must specify `working_dir` (no parent to inherit from)
+- **Group tasks** inherit `working_dir` from the group if not set explicitly
 - Tasks execute directly (not via tmux) - stdin/stdout pass through
 - Exit codes propagate - `rig run backend.build && rig run backend.deploy`
+
+### Makefile integration
+
+Groups with a `working_dir` automatically discover a `Makefile` in that directory. Targets become rig tasks under the group namespace — no duplication required.
+
+```yaml
+groups:
+  backend:
+    working_dir: ./backend    # Makefile here is auto-discovered
+
+    services:
+      api:
+        command: go run .
+        working_dir: ./backend
+
+    tasks:
+      deploy:
+        command: ./scripts/deploy.sh
+        description: Deploy to production
+```
+
+If `./backend/Makefile` contains:
+
+```makefile
+.PHONY: build test lint
+
+## build: compile for current platform
+build:
+    go build -o bin/api .
+
+## test: run unit tests
+test:
+    go test ./...
+
+## lint: run linter
+lint:
+    golangci-lint run
+```
+
+Then `rig tasks` shows `backend.build`, `backend.test`, `backend.lint` alongside `backend.deploy`. Running them:
+
+```bash
+rig run backend.build               # runs: make build
+rig run backend.test -- -v -run Foo # runs: make test -v -run Foo
+```
+
+**Which targets are exposed:** `.PHONY` targets only. If no `.PHONY` is declared, targets with `## name: description` comments are used instead. Targets starting with `.` or `_` are always excluded.
+
+**Descriptions** are extracted from `## target: description` comment lines in the Makefile.
+
+**Rigfile tasks override Makefile targets** — if both define a task with the same name, the rigfile wins.
+
+**Explicit Makefile paths** can be added with `makefiles:` for non-standard filenames or additional files:
+
+```yaml
+groups:
+  tools:
+    working_dir: .
+    makefiles:
+      - ./scripts/ci.mk        # non-standard name — uses make -f ci.mk
+      - ./tools/release.mk
+```
+
+Multiple Makefiles merge into the same group namespace.
 
 ### env_file
 
@@ -430,13 +496,12 @@ rig is not a build tool or task runner replacement. It's a dev workflow orchestr
 
 | Tool | Focus | rig's approach |
 |------|-------|----------------|
-| **Make** | Build dependency graphs | not a focus |
+| **Make** | Build dependency graphs | rig layers on top — Makefile targets become rig tasks automatically |
 | **npm/deno scripts/tasks** | Package-level tasks | rig spans multiple packages, manages long-running services |
 | **docker-compose** | Container orchestration | rig runs native processes via tmux, no containers required |
 
 **What rig doesn't do:**
 - Incremental builds or caching
-- Makefile compatibility
 - Container management
 - CI/CD pipelines
 

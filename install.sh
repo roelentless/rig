@@ -91,10 +91,17 @@ detect_platform() {
 # ============================================================================
 
 install_dir() {
-  case "$PLATFORM" in
-    linux) echo "$HOME/.local/bin" ;;
-    macos) echo "/usr/local/bin" ;;
-  esac
+  echo "$HOME/.local/bin"
+}
+
+check_stale_system_rig() {
+  if [ -x "/usr/local/bin/rig" ]; then
+    echo ""
+    warn "/usr/local/bin/rig exists and may shadow this installation."
+    warn "Remove it with:"
+    warn "  sudo rm /usr/local/bin/rig"
+    echo ""
+  fi
 }
 
 # ============================================================================
@@ -238,18 +245,10 @@ install_rig() {
   # Ensure destination directory exists
   mkdir -p "$DEST_DIR"
 
-  # Install binary (may need elevated privileges on macOS /usr/local/bin)
-  if [ -w "$DEST_DIR" ] || [ -w "$DEST" ] 2>/dev/null; then
-    mv "$TMP_DIR/rig" "$DEST"
-    chmod +x "$DEST"
-  elif has sudo; then
-    sudo mv "$TMP_DIR/rig" "$DEST"
-    sudo chmod +x "$DEST"
-  else
-    err "Cannot write to ${DEST_DIR}. Run as root or install sudo."
-    rm -rf "$TMP_DIR"
-    exit 1
-  fi
+  # Install binary
+  mkdir -p "$DEST_DIR"
+  mv "$TMP_DIR/rig" "$DEST"
+  chmod +x "$DEST"
 
   rm -rf "$TMP_DIR"
   ok "rig ${LATEST} installed to ${DEST}"
@@ -269,17 +268,16 @@ verify_path() {
 
   PATH_LINE="export PATH=\"${DEST_DIR}:\$PATH\""
 
-  # Add to ~/.profile (POSIX login shell config, sourced by bash/sh/dash)
-  add_to_profile "$HOME/.profile" "$PATH_LINE"
-
-  # For zsh users, also add to ~/.zprofile (zsh doesn't source ~/.profile)
   CURRENT_SHELL=$(basename "${SHELL:-/bin/sh}")
   if [ "$CURRENT_SHELL" = "zsh" ]; then
-    add_to_profile "$HOME/.zprofile" "$PATH_LINE"
+    add_to_profile "$HOME/.zshenv" "$PATH_LINE"
+    echo ""
+    warn "Open a new terminal or run: source ~/.zshenv"
+  else
+    add_to_profile "$HOME/.profile" "$PATH_LINE"
+    echo ""
+    warn "Open a new terminal or run: source ~/.profile"
   fi
-
-  echo ""
-  warn "Open a new terminal or run: source ~/.profile"
 }
 
 add_to_profile() {
@@ -324,6 +322,9 @@ main() {
   # Platform
   detect_platform
   printf "\n  Platform: ${PLATFORM}/${ARCH_LABEL}\n"
+
+  # Warn about stale system-wide install that could shadow this one
+  check_stale_system_rig
 
   # Check dependencies
   check_deps
