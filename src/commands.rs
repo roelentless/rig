@@ -754,8 +754,9 @@ pub fn cmd_task_list(tasks: &[ResolvedTask], group_filter: Option<&str>) -> Resu
     print("");
     for task in &filtered {
         let max_cmd_len = 50;
-        let cmd = if task.command.len() > max_cmd_len {
-            format!("{}...", &task.command[..max_cmd_len - 3])
+        let cmd = if task.command.chars().count() > max_cmd_len {
+            let truncated: String = task.command.chars().take(max_cmd_len - 3).collect();
+            format!("{}...", truncated)
         } else {
             task.command.clone()
         };

@@ -37,9 +37,10 @@ impl TaskProvider for RigProvider {
 
 /// Quote an argument for safe interpolation into a `sh -c` command line.
 pub(crate) fn shell_escape(arg: &str) -> String {
-    if arg
-        .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':'))
+    if !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':'))
     {
         arg.to_string()
     } else {
