@@ -14,11 +14,17 @@ use crate::providers::TaskProvider;
 // DEPENDENCY ORDERING
 // ============================================================================
 
-pub fn compute_startup_order(targets: &[ResolvedService]) -> Vec<Vec<ResolvedService>> {
-    let requested: std::collections::HashSet<String> =
-        targets.iter().map(|t| t.name.clone()).collect();
-    let by_name: HashMap<String, &ResolvedService> =
-        targets.iter().map(|t| (t.name.clone(), t)).collect();
+/// Order targets into dependency levels. Everything is keyed by each service's
+/// fully-qualified path — bare names may repeat across groups. `depends_on`
+/// references resolve same-group-first, then tree-wide unique (validated at
+/// config load); deps outside the requested target set impose no ordering.
+pub fn compute_startup_order(
+    targets: &[ResolvedService],
+    all_services: &[ResolvedService],
+) -> Vec<Vec<ResolvedService>> {
+    let requested: std::collections::HashSet<String> = targets.iter().map(|t| t.path()).collect();
+    let by_path: HashMap<String, &ResolvedService> =
+        targets.iter().map(|t| (t.path(), t)).collect();
 
     // Build dependency graph
     let mut deps: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
@@ -26,40 +32,42 @@ pub fn compute_startup_order(targets: &[ResolvedService]) -> Vec<Vec<ResolvedSer
         let mut d = std::collections::HashSet::new();
         if let Some(dep_list) = &target.def.depends_on {
             for dep in dep_list {
-                if requested.contains(dep) {
-                    d.insert(dep.clone());
+                let dep_path = crate::config::resolve_dep(dep, target, all_services)
+                    .expect("depends_on validated at config load");
+                if requested.contains(&dep_path) {
+                    d.insert(dep_path);
                 }
             }
         }
-        deps.insert(target.name.clone(), d);
+        deps.insert(target.path(), d);
     }
 
     // Kahn's algorithm
     let mut levels: Vec<Vec<ResolvedService>> = Vec::new();
     let mut remaining: std::collections::HashSet<String> =
-        targets.iter().map(|t| t.name.clone()).collect();
+        targets.iter().map(|t| t.path()).collect();
 
     while !remaining.is_empty() {
         let mut level = Vec::new();
-        for name in &remaining {
-            let unresolved: Vec<_> = deps[name]
+        for path in &remaining {
+            let unresolved: Vec<_> = deps[path]
                 .iter()
                 .filter(|d| remaining.contains(*d))
                 .collect();
             if unresolved.is_empty() {
-                level.push(by_name[name].clone());
+                level.push(by_path[path].clone());
             }
         }
 
         if level.is_empty() {
             // Circular dependency
             log_system("Warning: circular dependency detected, starting remaining services");
-            levels.push(remaining.iter().map(|n| by_name[n].clone()).collect());
+            levels.push(remaining.iter().map(|p| by_path[p].clone()).collect());
             break;
         }
 
         for svc in &level {
-            remaining.remove(&svc.name);
+            remaining.remove(&svc.path());
         }
         levels.push(level);
     }
@@ -87,7 +95,7 @@ pub async fn cmd_start(
 ) -> Result<(), String> {
     log_system(&format!("Starting {} process(es)...", targets.len()));
 
-    let levels = compute_startup_order(targets);
+    let levels = compute_startup_order(targets, all_services);
 
     // Track remediated checks across all services in this startup
     let mut remediated = std::collections::HashSet::new();
@@ -151,14 +159,14 @@ async fn monitor(
         _ = async {
             loop {
                 for target in &targets_owned {
-                    if dead_services.contains(&target.name) {
+                    if dead_services.contains(&target.path()) {
                         continue;
                     }
                     let mgr = managers_clone.get(&target.group).unwrap();
                     let status = mgr.status(&target.name).await;
                     if !status.running && status.exit_code.is_some() {
                         log(&format!("Exited with code {:?}", status.exit_code), &target.name, "red");
-                        dead_services.insert(target.name.clone());
+                        dead_services.insert(target.path());
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -228,11 +236,12 @@ pub async fn cmd_ps(
     targets: &[ResolvedService],
     full: bool,
 ) {
+    // Keyed by (group, service): bare names may repeat across groups.
     let mut sessions_by_service = HashMap::new();
-    for (_group, mgr) in managers {
+    for (group, mgr) in managers {
         let sessions = mgr.list_all().await;
         for session in sessions {
-            sessions_by_service.insert(session.name.clone(), session);
+            sessions_by_service.insert((group.clone(), session.name.clone()), session);
         }
     }
 
@@ -254,7 +263,7 @@ pub async fn cmd_ps(
     }
 
     for target in targets {
-        let session = sessions_by_service.get(&target.name);
+        let session = sessions_by_service.get(&(target.group.clone(), target.name.clone()));
         let (status_text, status_color, uptime) = match session {
             None => ("stopped".to_string(), "dim", "-".to_string()),
             Some(s) if s.running => {
@@ -414,19 +423,19 @@ async fn top_loop(
 ) -> Result<(), String> {
     use crate::process::SessionStatus;
 
-    // Cached state per service
+    // Cached state per service, keyed by FQ path (bare names may repeat).
     let mut metrics_cache: HashMap<String, ServiceMetrics> = HashMap::new();
-    let mut sessions_cache: HashMap<String, SessionStatus> = HashMap::new();
+    let mut sessions_cache: HashMap<(String, String), SessionStatus> = HashMap::new();
 
     for target in targets {
-        metrics_cache.insert(target.name.clone(), ServiceMetrics::stale());
+        metrics_cache.insert(target.path(), ServiceMetrics::stale());
     }
 
     loop {
         // 1. Refresh session status (cheap: single tmux call per group)
-        for (_group, mgr) in managers {
+        for (group, mgr) in managers {
             for session in mgr.list_all().await {
-                sessions_cache.insert(session.name.clone(), session);
+                sessions_cache.insert((group.clone(), session.name.clone()), session);
             }
         }
 
@@ -438,17 +447,17 @@ async fn top_loop(
                 break;
             }
 
-            let session = sessions_cache.get(&target.name);
+            let session = sessions_cache.get(&(target.group.clone(), target.name.clone()));
             let is_running = session.map(|s| s.running).unwrap_or(false);
             let pid = session.and_then(|s| s.pid);
 
             if is_running {
                 if let Some(pid) = pid {
-                    let cached = metrics_cache.get(&target.name).unwrap();
+                    let cached = metrics_cache.get(&target.path()).unwrap();
                     if now.duration_since(cached.last_update) >= cached.refresh_interval() {
                         let m = get_process_metrics(pid).await;
                         metrics_cache.insert(
-                            target.name.clone(),
+                            target.path(),
                             ServiceMetrics {
                                 memory_mb: m.memory_mb,
                                 cpu_percent: m.cpu_percent,
@@ -461,7 +470,7 @@ async fn top_loop(
                 }
             } else {
                 // Reset metrics for stopped services
-                metrics_cache.insert(target.name.clone(), ServiceMetrics::stale());
+                metrics_cache.insert(target.path(), ServiceMetrics::stale());
             }
         }
 
@@ -490,8 +499,8 @@ async fn top_loop(
         buf.push_str("\r\n");
 
         for target in targets {
-            let session = sessions_cache.get(&target.name);
-            let m = metrics_cache.get(&target.name).unwrap();
+            let session = sessions_cache.get(&(target.group.clone(), target.name.clone()));
+            let m = metrics_cache.get(&target.path()).unwrap();
 
             let (status_str, mem, cpu, ports, started) = match session {
                 None
@@ -642,7 +651,7 @@ pub async fn cmd_logs(
         for target in targets {
             let mgr = managers.get(&target.group).unwrap();
             let log_file = mgr.log_file(&target.name, previous);
-            let color = get_service_color(all_services, &target.name);
+            let color = get_service_color(all_services, &target.group, &target.name);
             if let Ok(content) = tokio::fs::read_to_string(&log_file).await {
                 for line in content.lines() {
                     let clean = strip_control_codes(line);
@@ -808,7 +817,7 @@ pub fn cmd_config(root: &Group, targets: &[ResolvedService], raw: bool, json: bo
     let cwd_str = cwd.to_string_lossy();
 
     for target in targets {
-        let color = get_service_color(&[target.clone()], &target.name);
+        let color = get_service_color(&[target.clone()], &target.group, &target.name);
         let wd = make_relative(&target.def.working_dir, &cwd_str);
         print(&format!(
             "{}{:<12}{} {}{:<12}{} {} {}working_dir={}{}",

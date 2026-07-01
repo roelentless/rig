@@ -421,8 +421,17 @@ impl SessionManager {
         }
     }
 
+    /// tmux session name: the group's dotted path flattened with '-', then the
+    /// service name. tmux mangles '.' in session names to '_' (and parses '.'
+    /// in `-t` targets as a window.pane separator), so the dotted path can't be
+    /// used verbatim; flattening keeps same-named services in different groups
+    /// on distinct sessions.
+    fn session_prefix(&self) -> String {
+        format!("{}-", self.group.replace('.', "-"))
+    }
+
     pub fn session_name(&self, service: &str) -> String {
-        format!("{}-{}", self.group, service)
+        format!("{}{}", self.session_prefix(), service)
     }
 
     pub async fn start(
@@ -686,7 +695,7 @@ impl SessionManager {
                 if stdout.is_empty() {
                     return Vec::new();
                 }
-                let prefix = format!("{}-", self.group);
+                let prefix = self.session_prefix();
                 stdout
                     .lines()
                     .filter(|line| line.starts_with(&prefix))
@@ -769,7 +778,7 @@ pub fn stream_logs(
     for target in targets {
         let mgr = managers.get(&target.group).unwrap();
         let log_file = mgr.log_file(&target.name, previous);
-        let color = get_service_color(all_services, &target.name);
+        let color = get_service_color(all_services, &target.group, &target.name);
         let name = target.name.clone();
         let color_owned = color.to_string();
         let notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -830,9 +839,17 @@ pub fn stream_logs(
     }
 }
 
-/// Get the service color by index or config override
-pub fn get_service_color(all_services: &[ResolvedService], service_name: &str) -> String {
-    if let Some(idx) = all_services.iter().position(|s| s.name == service_name) {
+/// Get the service color by index or config override. Matched on (group, name)
+/// since bare names may repeat across groups.
+pub fn get_service_color(
+    all_services: &[ResolvedService],
+    group: &str,
+    service_name: &str,
+) -> String {
+    if let Some(idx) = all_services
+        .iter()
+        .position(|s| s.group == group && s.name == service_name)
+    {
         if let Some(color) = &all_services[idx].def.color {
             return color.clone();
         }

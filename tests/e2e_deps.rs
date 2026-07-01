@@ -119,6 +119,105 @@ groups:
 }
 
 #[test]
+fn depends_on_same_group_wins_over_duplicate_elsewhere() {
+    // `db` exists in both groups; group-a's api depends on bare `db`, which
+    // must resolve to its own group's db — no ambiguity error.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "group-a/rig.yaml",
+        r#"
+services:
+  db:
+    command: sh -c "echo a-db; sleep 30"
+    working_dir: /tmp
+    healthcheck:
+      grace_ms: 100
+  api:
+    command: sh -c "echo a-api; sleep 30"
+    working_dir: /tmp
+    depends_on: [db]
+"#,
+    );
+    ctx.write_file(
+        "group-b/rig.yaml",
+        r#"
+services:
+  db:
+    command: sh -c "echo b-db; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["start", "-d"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let api_idx = result.stdout.find("Started api").expect("api started");
+    let db_idx = result.stdout.find("Started db").expect("db started");
+    assert!(db_idx < api_idx, "db should start before api");
+
+    assert!(session_exists("db", "group-a"));
+    assert!(session_exists("db", "group-b"));
+    assert!(session_exists("api", "group-a"));
+}
+
+#[test]
+fn ambiguous_depends_on_errors() {
+    // A bare depends_on with no same-group match and multiple tree-wide matches
+    // must fail at load, listing the FQ candidates.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "group-a/rig.yaml",
+        "services:\n  db:\n    command: sh -c \"echo a-db; sleep 30\"\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "group-b/rig.yaml",
+        "services:\n  db:\n    command: sh -c \"echo b-db; sleep 30\"\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "sub/rig.yaml",
+        "services:\n  web:\n    command: sh -c \"echo web; sleep 30\"\n    working_dir: /tmp\n    depends_on: [db]\n",
+    );
+
+    let result = ctx.rig(&["ps"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("ambiguous depends_on 'db'"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("group-a.db") && result.stderr.contains("group-b.db"),
+        "error must list both FQ paths, stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn dotted_depends_on_disambiguates() {
+    // A group-qualified depends_on picks the named service where a bare ref
+    // would be ambiguous.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "group-a/rig.yaml",
+        "services:\n  db:\n    command: sh -c \"echo a-db; sleep 30\"\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "group-b/rig.yaml",
+        "services:\n  db:\n    command: sh -c \"echo b-db; sleep 30\"\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "sub/rig.yaml",
+        "services:\n  web:\n    command: sh -c \"echo web; sleep 30\"\n    working_dir: /tmp\n    depends_on: [group-b.db]\n",
+    );
+
+    let result = ctx.rig(&["start", "-d"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(session_exists("web", "sub"));
+    assert!(session_exists("db", "group-a"));
+    assert!(session_exists("db", "group-b"));
+}
+
+#[test]
 fn ps_f_shows_full_metrics() {
     let ctx = TestContext::new();
     ctx.setup_test_config();

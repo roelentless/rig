@@ -566,6 +566,148 @@ groups:
     );
 }
 
+// ============================================================================
+// Duplicate service names across groups: legitimate (independent subprojects
+// compose into one tree). Bare CLI refs resolve unique-or-error; the FQ dotted
+// path is the identity.
+// ============================================================================
+
+/// Two sibling folder groups each defining a service `api`.
+fn write_duplicate_api_groups(ctx: &TestContext) {
+    ctx.write_file(
+        "group-a/rig.yaml",
+        r#"
+services:
+  api:
+    command: sh -c "echo from-a; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+    ctx.write_file(
+        "group-b/rig.yaml",
+        r#"
+services:
+  api:
+    command: sh -c "echo from-b; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+}
+
+#[test]
+fn duplicate_service_bare_name_start_is_ambiguous() {
+    // `rig start api` with `api` in two groups must error listing both FQ
+    // paths, never silently pick one.
+    let ctx = TestContext::new();
+    write_duplicate_api_groups(&ctx);
+
+    let result = ctx.rig(&["start", "-d", "api"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Ambiguous service 'api'"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("group-a.api") && result.stderr.contains("group-b.api"),
+        "error must list both FQ paths, stderr: {}",
+        result.stderr
+    );
+    assert!(!session_exists("api", "group-a"));
+    assert!(!session_exists("api", "group-b"));
+}
+
+#[test]
+fn duplicate_service_dotted_path_starts_only_that_one() {
+    let ctx = TestContext::new();
+    write_duplicate_api_groups(&ctx);
+
+    let result = ctx.rig(&["start", "-d", "group-a.api"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("Started api"),
+        "stdout: {}",
+        result.stdout
+    );
+    assert!(session_exists("api", "group-a"));
+    assert!(!session_exists("api", "group-b"));
+}
+
+#[test]
+fn duplicate_service_config_shows_both() {
+    // No silent collapse: `rig config` lists the service under both groups.
+    let ctx = TestContext::new();
+    write_duplicate_api_groups(&ctx);
+
+    let result = ctx.rig(&["config"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    let api_lines: Vec<&str> = clean.lines().filter(|l| l.contains("api")).collect();
+    assert!(
+        api_lines.iter().any(|l| l.contains("group-a"))
+            && api_lines.iter().any(|l| l.contains("group-b")),
+        "config must show api in both groups: {}",
+        clean
+    );
+}
+
+#[test]
+fn duplicate_service_start_all_starts_both() {
+    // Startup ordering is keyed by FQ path, so a bare-name collision must not
+    // swallow one of the services.
+    let ctx = TestContext::new();
+    write_duplicate_api_groups(&ctx);
+
+    let result = ctx.rig(&["start", "-d"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(session_exists("api", "group-a"));
+    assert!(session_exists("api", "group-b"));
+
+    // Both surface as distinct rows in ps.
+    let ps = ctx.rig(&["ps"]);
+    let clean = strip_ansi(&ps.stdout);
+    let running_api = clean
+        .lines()
+        .filter(|l| l.contains("api") && l.contains("running"))
+        .count();
+    assert_eq!(running_api, 2, "ps stdout: {}", clean);
+}
+
+#[test]
+fn nested_group_service_session_uses_flattened_path() {
+    // A service in a nested group (dotted path `sub.inner`) gets a tmux session
+    // named by the '-'-flattened path — tmux rejects '.' in session names.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "sub/inner/rig.yaml",
+        r#"
+services:
+  deep-svc:
+    command: sh -c "echo deep; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["start", "-d", "sub.inner.deep-svc"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(session_exists("deep-svc", "sub-inner"));
+
+    let ps = ctx.rig(&["ps"]);
+    let clean = strip_ansi(&ps.stdout);
+    assert!(
+        clean
+            .lines()
+            .any(|l| l.contains("deep-svc") && l.contains("running")),
+        "ps stdout: {}",
+        clean
+    );
+
+    let stop = ctx.rig(&["stop", "sub.inner.deep-svc"]);
+    assert_eq!(stop.code, 0, "stderr: {}", stop.stderr);
+    delay_ms(200);
+    assert!(!session_exists("deep-svc", "sub-inner"));
+}
+
 #[test]
 fn dir_group_inline_task_duplicating_dir_rig_task_errors() {
     // A `dir:` group's inline task colliding with a rig task of the same name

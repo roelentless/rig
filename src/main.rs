@@ -49,6 +49,7 @@ EXAMPLES:
   rig up -d                 Start all in background
   rig start api worker      Start specific services
   rig start api,worker      Same, comma-separated
+  rig start backend.api     Start by dotted path (bare names must be unique)
   rig start -g backend      Start all services in backend group
   rig down                  Stop all processes (graceful)
   rig stop -g backend       Stop all services in backend group
@@ -326,8 +327,7 @@ async fn main() {
                  groups: &[String]|
                  -> Result<(Group, String, Vec<ResolvedService>), ConfigError> {
                     let (config, config_dir) = load_config(None)?;
-                    let lookup = build_service_lookup(&config);
-                    let targets = resolve_targets(&config, &lookup, services, groups)?;
+                    let targets = resolve_targets(&config, services, groups)?;
                     Ok((config, config_dir, targets))
                 };
 

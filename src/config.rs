@@ -152,6 +152,14 @@ pub struct ResolvedService {
     pub def: ServiceDef,
 }
 
+impl ResolvedService {
+    /// Fully-qualified dotted path (`group.name`; bare at the root) — the
+    /// service's identity. Bare names may repeat across groups.
+    pub fn path(&self) -> String {
+        join_path(&self.group, &self.name)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedTask {
     pub path: String,
@@ -1444,39 +1452,67 @@ fn build_child_group(
     Ok(group)
 }
 
-/// Validate every service's `depends_on` against the set of known service names.
+/// Validate every service's `depends_on`: each reference must resolve under
+/// `resolve_dep`'s rules (same group first, then tree-wide unique, dotted paths
+/// exact). Ambiguous bare references fail here, at load time.
 fn validate_depends_on(root: &Group) -> Result<(), ConfigError> {
-    let mut names: HashSet<String> = HashSet::new();
-    collect_service_names(root, &mut names);
-
-    fn walk(g: &Group, prefix: &str, names: &HashSet<String>) -> Result<(), ConfigError> {
-        for (sname, sdef) in &g.services {
-            if let Some(deps) = &sdef.depends_on {
-                for dep in deps {
-                    if !names.contains(dep) {
-                        return Err(ConfigError::generic(format!(
-                            "Service '{}' depends on unknown service '{}'",
-                            join_path(prefix, sname),
-                            dep
-                        )));
-                    }
-                }
+    let all = get_all_services(root);
+    for svc in &all {
+        if let Some(deps) = &svc.def.depends_on {
+            for dep in deps {
+                resolve_dep(dep, svc, &all)?;
             }
         }
-        for child in &g.groups {
-            walk(child, &join_path(prefix, &child.name), names)?;
-        }
-        Ok(())
     }
-    walk(root, "", &names)
+    Ok(())
 }
 
-fn collect_service_names(g: &Group, out: &mut HashSet<String>) {
-    for (sname, _) in &g.services {
-        out.insert(sname.clone());
+/// Resolve a `depends_on` reference from `from` to the fully-qualified path of
+/// the service it names. Bare names may repeat across groups, so:
+/// - a dotted reference must match a service path exactly;
+/// - a bare reference resolves to the same-group service if one exists, else it
+///   must be unique tree-wide — ambiguity is an error listing the matches.
+pub fn resolve_dep(
+    dep: &str,
+    from: &ResolvedService,
+    all: &[ResolvedService],
+) -> Result<String, ConfigError> {
+    let unknown = || {
+        ConfigError::generic(format!(
+            "Service '{}' depends on unknown service '{}'",
+            from.path(),
+            dep
+        ))
+    };
+
+    if dep.contains('.') {
+        if all.iter().any(|s| s.path() == dep) {
+            return Ok(dep.to_string());
+        }
+        return Err(unknown());
     }
-    for child in &g.groups {
-        collect_service_names(child, out);
+
+    if all.iter().any(|s| s.group == from.group && s.name == dep) {
+        return Ok(join_path(&from.group, dep));
+    }
+
+    let mut matches: Vec<String> = all
+        .iter()
+        .filter(|s| s.name == dep)
+        .map(|s| s.path())
+        .collect();
+    match matches.len() {
+        0 => Err(unknown()),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            matches.sort();
+            Err(ConfigError::generic(format!(
+                "Service '{}' has ambiguous depends_on '{}'. Matches: {}",
+                from.path(),
+                dep,
+                matches.join(", ")
+            )))
+        }
     }
 }
 
@@ -1886,13 +1922,39 @@ fn collect_group_paths(root: &Group) -> HashSet<String> {
 // CONFIG QUERYING
 // ============================================================================
 
-/// Flat lookup from bare service name to its resolved form (last one wins on a
-/// name collision across groups).
-pub fn build_service_lookup(root: &Group) -> HashMap<String, ResolvedService> {
-    get_all_services(root)
-        .into_iter()
-        .map(|s| (s.name.clone(), s))
-        .collect()
+/// Resolve one CLI service reference. Duplicate bare names across groups are
+/// legitimate, so (mirroring `resolve_task`):
+/// - dotted `group.service` → exact fully-qualified path match;
+/// - bare name → unique across the tree, or an ambiguity error listing the
+///   matching fully-qualified paths. Never silently picks one.
+fn resolve_service<'a>(
+    all: &'a [ResolvedService],
+    name: &str,
+) -> Result<&'a ResolvedService, ConfigError> {
+    let dotted = name.contains('.');
+    let matches: Vec<&ResolvedService> = all
+        .iter()
+        .filter(|s| {
+            if dotted {
+                s.path() == name
+            } else {
+                s.name == name
+            }
+        })
+        .collect();
+    match matches.len() {
+        0 => Err(ConfigError::generic(format!("Unknown service: {}", name))),
+        1 => Ok(matches[0]),
+        _ => {
+            let mut fqs: Vec<String> = matches.iter().map(|s| s.path()).collect();
+            fqs.sort();
+            Err(ConfigError::generic(format!(
+                "Ambiguous service '{}'. Matches: {}",
+                name,
+                fqs.join(", ")
+            )))
+        }
+    }
 }
 
 /// Resolve a task path (`task`, `group.task`, or `group.service.task`) over the
@@ -1975,10 +2037,10 @@ pub fn resolve_task(path: &str, root: &Group) -> Result<ResolvedTask, ConfigErro
     Ok(found)
 }
 
-/// Resolve CLI targets (group filters, then explicit service names, then all).
+/// Resolve CLI targets (group filters, then explicit service names — bare or
+/// dotted, unique-or-error — then all).
 pub fn resolve_targets(
     root: &Group,
-    lookup: &HashMap<String, ResolvedService>,
     service_names: &[String],
     group_names: &[String],
 ) -> Result<Vec<ResolvedService>, ConfigError> {
@@ -2003,12 +2065,10 @@ pub fn resolve_targets(
     }
 
     if !service_names.is_empty() {
+        let all = get_all_services(root);
         let mut services = Vec::new();
         for name in service_names {
-            let resolved = lookup
-                .get(name)
-                .ok_or_else(|| ConfigError::generic(format!("Unknown service: {}", name)))?;
-            services.push(resolved.clone());
+            services.push(resolve_service(&all, name)?.clone());
         }
         return Ok(services);
     }
