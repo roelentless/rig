@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::process::Stdio;
 
 use crossterm::{cursor, event, execute, terminal};
-use tokio::process::Command;
 
-use crate::config::{get_all_tasks, Config, ResolvedService, ResolvedTask};
+use crate::config::{Config, ResolvedService, ResolvedTask};
 use crate::output::{
     c, c_raw, log, log_error, log_system, log_verbose, print, strip_control_codes,
 };
 use crate::process::{get_process_metrics, get_service_color, stream_logs, SessionManager};
+use crate::providers::TaskProvider;
 
 // ============================================================================
 // DEPENDENCY ORDERING
@@ -662,63 +661,21 @@ pub async fn cmd_logs(
 // TASKS
 // ============================================================================
 
-fn shell_escape(arg: &str) -> String {
-    if arg
-        .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':'))
-    {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', "'\\''"))
-    }
-}
-
-pub async fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
-    let full_command = if args.is_empty() {
-        resolved.command.clone()
-    } else {
-        format!(
-            "{} {}",
-            resolved.command,
-            args.iter()
-                .map(|a| shell_escape(a))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-    };
-
-    log_verbose(&format!("task={}", resolved.path));
-    log_verbose(&format!("command={}", full_command));
-    log_verbose(&format!("working_dir={}", resolved.working_dir));
-
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", &full_command]);
-    cmd.current_dir(&resolved.working_dir);
-    cmd.stdin(Stdio::inherit());
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
-
-    // Merge environment
-    if let Some(env) = &resolved.environment {
-        cmd.envs(env);
-    }
-
-    match cmd.status().await {
-        Ok(status) => status.code().unwrap_or(1),
-        Err(e) => {
-            log_error(&format!(
-                "Failed to run task '{}' (command='{}', dir='{}'): {}",
-                resolved.path, resolved.command, resolved.working_dir, e
-            ));
-            1
-        }
-    }
-}
-
-pub async fn cmd_tasks(tasks: &[ResolvedTask], args: &[String], parallel: bool) -> i32 {
+/// Orchestrate running one or more resolved tasks through their provider.
+///
+/// Single task runs directly (args allowed). Multiple tasks reject args, then
+/// run sequentially fail-fast, or in parallel (continue on failure, return the
+/// first non-zero exit code). `run` is synchronous, so the parallel path uses
+/// scoped threads.
+pub fn cmd_tasks(
+    provider: &(dyn TaskProvider + Send + Sync),
+    tasks: &[ResolvedTask],
+    args: &[String],
+    parallel: bool,
+) -> i32 {
     // Single task
     if tasks.len() == 1 {
-        return run_task(&tasks[0], args).await;
+        return provider.run(&tasks[0], args);
     }
 
     // Multiple tasks with args is an error
@@ -730,7 +687,7 @@ pub async fn cmd_tasks(tasks: &[ResolvedTask], args: &[String], parallel: bool) 
     if !parallel {
         // Sequential (fail-fast)
         for task in tasks {
-            let code = run_task(task, &[]).await;
+            let code = provider.run(task, &[]);
             if code != 0 {
                 log_error(&format!(
                     "Task '{}' failed with exit code {}",
@@ -741,28 +698,33 @@ pub async fn cmd_tasks(tasks: &[ResolvedTask], args: &[String], parallel: bool) 
         }
         0
     } else {
-        // Parallel
-        let mut handles = Vec::new();
-        for task in tasks {
-            let task = task.clone();
-            handles.push(tokio::spawn(async move {
-                let code = run_task(&task, &[]).await;
-                if code != 0 {
-                    log_error(&format!(
-                        "Task '{}' failed with exit code {}",
-                        task.path, code
-                    ));
-                }
-                (task.path.clone(), code)
-            }));
-        }
+        // Parallel: scoped threads borrow the shared provider and tasks.
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = tasks
+                .iter()
+                .map(|task| {
+                    scope.spawn(move || {
+                        let code = provider.run(task, &[]);
+                        if code != 0 {
+                            log_error(&format!(
+                                "Task '{}' failed with exit code {}",
+                                task.path, code
+                            ));
+                        }
+                        (task.path.clone(), code)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
 
         let mut first_error = 0;
-        for handle in handles {
-            if let Ok((_path, code)) = handle.await {
-                if code != 0 && first_error == 0 {
-                    first_error = code;
-                }
+        for (_path, code) in results {
+            if code != 0 && first_error == 0 {
+                first_error = code;
             }
         }
         first_error
@@ -770,12 +732,11 @@ pub async fn cmd_tasks(tasks: &[ResolvedTask], args: &[String], parallel: bool) 
 }
 
 /// Returns Err if no tasks found, Ok(()) otherwise.
-pub fn cmd_task_list(config: &Config, group_filter: Option<&str>) -> Result<(), String> {
-    let tasks = get_all_tasks(config);
+pub fn cmd_task_list(tasks: &[ResolvedTask], group_filter: Option<&str>) -> Result<(), String> {
     let filtered: Vec<_> = if let Some(group) = group_filter {
-        tasks.into_iter().filter(|t| t.group == group).collect()
+        tasks.iter().filter(|t| t.group == group).cloned().collect()
     } else {
-        tasks
+        tasks.to_vec()
     };
 
     if filtered.is_empty() {

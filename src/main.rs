@@ -6,6 +6,7 @@ use rig::commands::*;
 use rig::config::*;
 use rig::output::*;
 use rig::process::*;
+use rig::providers::providers;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -272,9 +273,9 @@ async fn main() {
 
         // Task listing
         Commands::Tasks { group } => {
-            let (config, _) = load_config(None).unwrap_or_else(|e| handle_config_error(e));
+            let ps = providers(None).unwrap_or_else(|e| handle_config_error(e));
             let group_filter = group.first().map(|s| s.as_str());
-            if let Err(e) = cmd_task_list(&config, group_filter) {
+            if let Err(e) = cmd_task_list(&ps[0].discover(), group_filter) {
                 handle_error(&e);
             }
         }
@@ -294,11 +295,11 @@ async fn main() {
             group,
             pass_args,
         } => {
-            let (config, _) = load_config(None).unwrap_or_else(|e| handle_config_error(e));
+            let ps = providers(None).unwrap_or_else(|e| handle_config_error(e));
 
             if list {
                 let group_filter = group.first().map(|s| s.as_str());
-                if let Err(e) = cmd_task_list(&config, group_filter) {
+                if let Err(e) = cmd_task_list(&ps[0].discover(), group_filter) {
                     handle_error(&e);
                 }
                 return;
@@ -306,7 +307,7 @@ async fn main() {
 
             if tasks.is_empty() {
                 let group_filter = group.first().map(|s| s.as_str());
-                if let Err(e) = cmd_task_list(&config, group_filter) {
+                if let Err(e) = cmd_task_list(&ps[0].discover(), group_filter) {
                     handle_error(&e);
                 }
                 return;
@@ -314,10 +315,10 @@ async fn main() {
 
             let resolved: Vec<ResolvedTask> = tasks
                 .iter()
-                .map(|p| resolve_task(p, &config).unwrap_or_else(|e| handle_config_error(e)))
+                .map(|p| ps[0].resolve(p).unwrap_or_else(|e| handle_config_error(e)))
                 .collect();
 
-            let code = cmd_tasks(&resolved, &pass_args, parallel).await;
+            let code = cmd_tasks(ps[0].as_ref(), &resolved, &pass_args, parallel);
             process::exit(code);
         }
 

@@ -6,7 +6,6 @@ use thiserror::Error;
 
 use crate::output::log_verbose;
 use crate::providers::makefile::MakeProvider;
-use crate::providers::TaskProvider;
 
 // ============================================================================
 // ERRORS
@@ -739,7 +738,7 @@ fn load_config_recursive(
                 }
 
                 let provider = MakeProvider::new(makefile_paths.clone());
-                for dt in provider.discover() {
+                for dt in provider.scan() {
                     tasks_map.entry(dt.name.clone()).or_insert(TaskDef {
                         command: dt.command,
                         working_dir: Some(dt.working_dir),

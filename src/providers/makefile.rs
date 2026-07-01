@@ -1,9 +1,20 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::{DiscoveredTask, TaskProvider};
+/// A Makefile target lowered to a runnable command at load time.
+///
+/// `command` is the lowered command string (e.g. `"make build"` /
+/// `"make -f ci.mk build"`) exactly as produced today. These are folded into
+/// the rig `Config` during load; this is a load-time scanner, not a
+/// request-time provider.
+pub struct MakefileTarget {
+    pub name: String,
+    pub command: String,
+    pub working_dir: String,
+    pub description: Option<String>,
+}
 
-/// Discovers tasks from a set of already-resolved, existence-validated Makefiles.
+/// Scans tasks from a set of already-resolved, existence-validated Makefiles.
 pub struct MakeProvider {
     makefiles: Vec<PathBuf>,
 }
@@ -12,14 +23,8 @@ impl MakeProvider {
     pub fn new(makefiles: Vec<PathBuf>) -> Self {
         MakeProvider { makefiles }
     }
-}
 
-impl TaskProvider for MakeProvider {
-    fn name(&self) -> &str {
-        "makefile"
-    }
-
-    fn discover(&self) -> Vec<DiscoveredTask> {
+    pub fn scan(&self) -> Vec<MakefileTarget> {
         let mut result = Vec::new();
         for makefile_path in &self.makefiles {
             let makefile_dir = makefile_path
@@ -40,7 +45,7 @@ impl TaskProvider for MakeProvider {
                 };
 
             for (target_name, description) in parse_makefile(makefile_path) {
-                result.push(DiscoveredTask {
+                result.push(MakefileTarget {
                     command: format!("{} {}", make_prefix, target_name),
                     working_dir: makefile_dir.clone(),
                     description,
@@ -464,7 +469,7 @@ beta:
         );
 
         let provider = MakeProvider::new(vec![mf]);
-        let tasks = provider.discover();
+        let tasks = provider.scan();
         assert_eq!(
             tasks.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
             vec!["alpha", "beta"]
