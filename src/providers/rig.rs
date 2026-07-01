@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -52,24 +52,41 @@ impl TaskProvider for RigProvider {
 /// first: forward `signal` (the one rig received) to the whole subtree —
 /// emulating what a terminal foreground group delivers, which is what `make`
 /// expects to run its delete-partial-target cleanup. Then poll, re-snapshotting
-/// so children forked mid-shutdown are seen (and signalled), until the tree
-/// drains or the grace window ends — after which whatever remains is SIGKILLed.
+/// so children forked mid-shutdown are seen (and signalled), until every
+/// signalled process is gone or the grace window ends — after which whatever
+/// remains is SIGKILLed.
+///
+/// Draining and the backstop track the cumulative signalled set, NOT the live
+/// descendant tree: when an intermediate `sh -c` dies first, the rest of the
+/// subtree reparents to init and would escape a descendants-only walk (this
+/// bit on Linux, where /bin/sh doesn't exec-optimize the wrapper away). Each
+/// tracked PID keeps its start time so a reused PID is never killed by mistake.
 fn cancel_descendants(root: u32, signal: Signal) {
     let mut sys = System::new();
-    let mut signalled: HashSet<Pid> = HashSet::new();
+    let mut tracked: HashMap<Pid, u64> = HashMap::new();
     let deadline = Instant::now() + CANCEL_GRACE;
 
+    let alive = |sys: &System, tracked: &HashMap<Pid, u64>| -> Vec<Pid> {
+        tracked
+            .iter()
+            .filter(|(pid, start)| {
+                sys.process(**pid)
+                    .is_some_and(|p| p.start_time() == **start)
+            })
+            .map(|(pid, _)| *pid)
+            .collect()
+    };
+
     loop {
-        let victims = descendants(&mut sys, root);
-        if victims.is_empty() {
-            return;
-        }
-        for &pid in &victims {
-            if signalled.insert(pid) {
-                if let Some(proc_) = sys.process(pid) {
+        for pid in descendants(&mut sys, root) {
+            if let Some(proc_) = sys.process(pid) {
+                if tracked.insert(pid, proc_.start_time()).is_none() {
                     proc_.kill_with(signal);
                 }
             }
+        }
+        if alive(&sys, &tracked).is_empty() {
+            return;
         }
         if Instant::now() >= deadline {
             break;
@@ -78,8 +95,9 @@ fn cancel_descendants(root: u32, signal: Signal) {
     }
 
     // Backstop: SIGKILL processes that ignored (or never drained after) the
-    // graceful signal.
-    for pid in descendants(&mut sys, root) {
+    // graceful signal, wherever they got reparented to.
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    for pid in alive(&sys, &tracked) {
         if let Some(proc_) = sys.process(pid) {
             proc_.kill_with(Signal::Kill);
         }
