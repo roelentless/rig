@@ -863,8 +863,7 @@ services:
 tasks:
   build:
     command: npm run build
-    working_dir: .
-    description: Build the project
+    description: Build the project   # working_dir defaults to this folder
 ";
 
     std::fs::write("rig.yaml", template)
