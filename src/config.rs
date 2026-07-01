@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::output::log_verbose;
+use crate::providers::makefile::MakeProvider;
+use crate::providers::TaskProvider;
 
 // ============================================================================
 // ERRORS
@@ -571,69 +573,6 @@ pub fn find_nearest_config(start_dir: &Path) -> Result<PathBuf, ConfigError> {
     ))
 }
 
-/// Parse a Makefile and return (target_name, description) for public targets.
-///
-/// Public targets are those listed in `.PHONY`. If no `.PHONY` is declared,
-/// falls back to targets with `## target: description` comments.
-/// Descriptions are extracted from `## target: description` comment lines
-/// that appear anywhere in the file.
-fn parse_makefile(path: &Path) -> Vec<(String, Option<String>)> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    // Collect .PHONY targets (handles multiple .PHONY declarations)
-    let mut phony: HashSet<String> = HashSet::new();
-    for line in content.lines() {
-        if let Some(rest) = line.trim().strip_prefix(".PHONY:") {
-            for target in rest.split_whitespace() {
-                phony.insert(target.to_string());
-            }
-        }
-    }
-
-    // Collect ## target: description comments.
-    // Only match non-indented lines (## at column 0) to skip continuation comments.
-    let mut descriptions: HashMap<String, String> = HashMap::new();
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("## ") {
-            // rest must start with the target name directly (no leading whitespace)
-            if !rest.starts_with(' ') && !rest.starts_with('\t') {
-                if let Some(colon_pos) = rest.find(':') {
-                    let target = rest[..colon_pos].trim().to_string();
-                    let desc = rest[colon_pos + 1..].trim().to_string();
-                    // Valid make target names: no spaces
-                    if !target.is_empty() && !target.contains(' ') {
-                        descriptions.insert(target, desc);
-                    }
-                }
-            }
-        }
-    }
-
-    let candidates: Vec<String> = if phony.is_empty() {
-        // No .PHONY — expose only targets documented with ## comments
-        descriptions.keys().cloned().collect()
-    } else {
-        // Expose .PHONY targets, skipping internal ones (leading . or _)
-        phony
-            .into_iter()
-            .filter(|t| !t.starts_with('.') && !t.starts_with('_'))
-            .collect()
-    };
-
-    let mut result: Vec<(String, Option<String>)> = candidates
-        .into_iter()
-        .map(|name| {
-            let desc = descriptions.get(&name).cloned();
-            (name, desc)
-        })
-        .collect();
-    result.sort_by(|a, b| a.0.cmp(&b.0));
-    result
-}
-
 /// Context for recursive config loading
 struct LoadContext {
     loaded: HashSet<String>,
@@ -797,34 +736,17 @@ fn load_config_recursive(
                             config_path
                         )));
                     }
-                    let makefile_dir = makefile_path
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| ".".to_string());
+                }
 
-                    // Use `make -f <name>` for non-standard filenames so make can find the file
-                    let filename = makefile_path
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "Makefile".to_string());
-                    let make_prefix = if filename == "Makefile"
-                        || filename == "makefile"
-                        || filename == "GNUmakefile"
-                    {
-                        "make".to_string()
-                    } else {
-                        format!("make -f {}", filename)
-                    };
-
-                    for (target_name, description) in parse_makefile(makefile_path) {
-                        tasks_map.entry(target_name.clone()).or_insert(TaskDef {
-                            command: format!("{} {}", make_prefix, target_name),
-                            working_dir: Some(makefile_dir.clone()),
-                            environment: None,
-                            env_file: None,
-                            description,
-                        });
-                    }
+                let provider = MakeProvider::new(makefile_paths.clone());
+                for dt in provider.discover() {
+                    tasks_map.entry(dt.name.clone()).or_insert(TaskDef {
+                        command: dt.command,
+                        working_dir: Some(dt.working_dir),
+                        environment: None,
+                        env_file: None,
+                        description: dt.description,
+                    });
                 }
             }
 
