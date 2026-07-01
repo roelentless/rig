@@ -142,7 +142,7 @@ src/
   output.rs     → Terminal output: colors, logging, display helpers
   config.rs     → Types, schema validation, group-tree loading/parsing/querying, env cascade
   providers/    → Task providers over the group tree
-    mod.rs      → `TaskProvider` trait, `providers()` builder, `resolve_across()` precedence
+    mod.rs      → `TaskProvider` trait, `provider()` builder (one tree-backed provider)
     rig.rs      → Tree-backed provider: rig-authored + Makefile tasks
     makefile.rs → Makefile parsing (targets, docs, default goal, includes) + `make` commands
   process.rs    → SessionManager, process tree/metrics, tmux checks, log streaming
@@ -246,6 +246,8 @@ tests/
   common/mod.rs       # TestContext: temp dirs, rig binary, tmux helpers, cleanup
   e2e_help.rs         # Help/version output tests
   e2e_tasks.rs        # Task execution tests
+  e2e_makefile.rs     # Makefile target discovery + folder namespacing
+  e2e_make_compat.rs  # Makefile runtime contract: exit codes, signals, env forwarding
   e2e_env.rs          # Environment variable tests
   e2e_deps.rs         # depends_on tests
   e2e_watch.rs        # File watching tests
