@@ -30,8 +30,8 @@ SERVICES:
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
 
 TASKS:
-  tasks [--group <name>]           List all tasks
-  run/task <task...> [-- args...]  Run task(s) (group.name or group.service.name)
+  tasks [--group <name>]           List all tasks (→ marks a Makefile default goal)
+  run/task <task...> [-- args...]  Run task(s): name, group.name, or group.service.name
     -p, --parallel                 Run tasks in parallel
 
 OTHER:
@@ -56,17 +56,29 @@ EXAMPLES:
   rig logs -f               Follow all logs
   rig logs --prev api       Show previous logs for api
   rig tasks                 List all tasks
-  rig run backend.deploy    Run a task
+  rig run build             Run a task by name (Makefile target or rig task)
+  rig run backend.deploy    Run a namespaced task
   rig run backend.api.test -- --coverage  Pass args to task
   rig run api.test web.test Run multiple tasks sequentially
   rig run api.test web.test -p  Run tasks in parallel
   rig config --json         Show raw JSON config
 
 CONFIG:
-  Discovers rig.yaml, rig.yml, or *.rig.yaml downward from the current
-  directory (gitignore-aware). Each subfolder with a rig file becomes a child
-  group named by its folder; authored `groups:` with `dir:`/`paths:` reshape or
-  rename. Properties (environment, env_file, working_dir) cascade ancestor-wins.
+  Zero-config: a folder with a Makefile just works — `rig tasks` lists its
+  targets and `rig run <target>` runs them via make. Root Makefile targets are
+  bare names, ./sub/Makefile targets become sub.<target>, nested folders dot
+  deeper. Each Makefile's default goal is marked with → in listings.
+
+  For services (and richer tasks) add rig.yaml, rig.yml, or *.rig.yaml. Config
+  is a folder-aware group tree, discovered downward from the current directory
+  (gitignore-aware). Top-level tasks/services/environment/env_file need no
+  wrapper (root = CWD → bare names). Any subfolder holding a Makefile or rig
+  file auto-becomes a child group named by its folder. Authored `groups:`
+  reshape the tree: a group is backed by `dir:` (adopt/rename a folder with its
+  Makefile and/or rig file), `paths:` (explicit rig files), and/or inline
+  units and child groups. `environment` and `env_file` cascade ancestor-wins —
+  a higher group wraps a project and injects env from above; env files load at
+  run/start, not at list time.
 "#;
 
 #[derive(Parser)]

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-01
+
+- feature: first-class Makefile support — zero-config, folder-namespaced tasks
+- feature: Makefile default goal marked with `→` in `rig tasks`
+- feature: group-tree config — subfolders auto-compose into namespaced groups
+- improvement: compose with `dir:`/`paths:` and folders — `imports:` removed
+- feature: `environment`/`env_file` cascade ancestor-wins down the group tree
+
 ## 2026-03-16
 
 - feature: Makefile tasks — set group `working_dir` and Makefile targets become rig tasks

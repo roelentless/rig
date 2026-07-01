@@ -38,12 +38,13 @@ Tasks execute directly - they pass through stdin/stdout and exit codes.
 
 Smoother dev workflow when working with many services, apps, and commands - without having to delegate everything to docker.
 
-- **Simple config** - one yaml or multiple that compose via imports
+- **Zero-config Makefiles** - a folder with a Makefile just works, no rig.yaml needed
+- **Simple config** - one yaml, or a folder tree that composes automatically
 - **No state, no runtime** - tmux is the source of truth, no daemon running
 - **Survives terminal close** - tmux keeps services running, come back anytime
 - **Optional file watching** - services auto-restart when code changes
-- **Supports monorepo workflows** - run from any subdirectory, configs compose via imports
-- **Runs anything** - npm, deno, cargo, docker, scripts - doesn't matter
+- **Supports monorepo workflows** - nested folders and Makefiles compose into one group tree
+- **Runs anything** - make, npm, deno, cargo, docker, scripts - doesn't matter
 - **Greppable file logs** - logs persist to disk, easy to search for you or agents
 - **Quick inspection** - see resource usage and ports at a glance
 - **Fast project switching** - spin up/down entire setups when switching between projects
@@ -100,7 +101,13 @@ mv rig /usr/local/bin/
 
 ## Configuration
 
-Create `rig.yaml` somewhere:
+**No config needed for Makefiles.** Drop rig into any folder with a `Makefile` and
+`rig tasks` / `rig run <target>` work immediately — see [Makefile support](#makefile-support).
+
+For services (and richer tasks), add a `rig.yaml`, `rig.yml`, or `*.rig.yaml`. Top-level
+`tasks`, `services`, `environment`, and `env_file` need no wrapper — they attach to the
+root (the current directory), so their names are bare. Use `groups:` to namespace and
+compose:
 
 ```yaml
 groups:
@@ -161,12 +168,9 @@ SERVICES:
   config [--raw|--json] [services...] Show config (--raw for YAML, --json for JSON)
 
 TASKS:
-  tasks [--group <name>]           List all tasks
-  run/task <task...> [-- args...]  Run task(s) (group.name or group.service.name)
+  tasks [--group <name>]           List all tasks (→ marks a Makefile default goal)
+  run/task <task...> [-- args...]  Run task(s): name, group.name, or group.service.name
     -p, --parallel                 Run tasks in parallel
-
-MULTI-FILE:
-  discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
 
 OTHER:
   version                   Show version
@@ -180,6 +184,7 @@ EXAMPLES:
   rig up                    Start all processes (all groups)
   rig up -d                 Start all in background
   rig start api worker      Start specific services
+  rig start api,worker      Same, comma-separated
   rig start -g backend      Start all services in backend group
   rig down                  Stop all processes (graceful)
   rig stop -g backend       Stop all services in backend group
@@ -189,16 +194,30 @@ EXAMPLES:
   rig logs -f               Follow all logs
   rig logs --prev api       Show previous logs for api
   rig tasks                 List all tasks
-  rig run backend.deploy    Run a task
+  rig run build             Run a task by name (Makefile target or rig task)
+  rig run backend.deploy    Run a namespaced task
   rig run backend.api.test -- --coverage  Pass args to task
   rig run api.test web.test Run multiple tasks sequentially
   rig run api.test web.test -p  Run tasks in parallel
   rig config --json         Show raw JSON config
-  rig discover              Scan for rig files and update imports
 
 CONFIG:
-  Searches upward from current directory for rig.yaml, rig.yml, or *.rig.yaml.
-  Supports imports to compose configs from multiple files.
+  Zero-config: a folder with a Makefile just works — `rig tasks` lists its
+  targets and `rig run <target>` runs them via make. Root Makefile targets are
+  bare names, ./sub/Makefile targets become sub.<target>, nested folders dot
+  deeper. Each Makefile's default goal is marked with → in listings.
+
+  For services (and richer tasks) add rig.yaml, rig.yml, or *.rig.yaml. Config
+  is a folder-aware group tree, discovered downward from the current directory
+  (gitignore-aware). Top-level tasks/services/environment/env_file need no
+  wrapper (root = CWD → bare names). Any subfolder holding a Makefile or rig
+  file auto-becomes a child group named by its folder. Authored `groups:`
+  reshape the tree: a group is backed by `dir:` (adopt/rename a folder with its
+  Makefile and/or rig file), `paths:` (explicit rig files), and/or inline
+  units and child groups. `environment` and `env_file` cascade ancestor-wins —
+  a higher group wraps a project and injects env from above; env files load at
+  run/start, not at list time.
+
 ```
 
 ## Config reference
@@ -263,69 +282,56 @@ groups:
 - Tasks execute directly (not via tmux) - stdin/stdout pass through
 - Exit codes propagate - `rig run backend.build && rig run backend.deploy`
 
-### Makefile integration
+### Makefile support
 
-Groups with a `working_dir` automatically discover a `Makefile` in that directory. Targets become rig tasks under the group namespace — no duplication required.
+Makefiles are first-class. Any folder in the tree that contains a standard `Makefile`
+(`Makefile`, `makefile`, or `GNUmakefile`) contributes its targets as rig tasks — with or
+without a `rig.yaml`.
 
-```yaml
-groups:
-  backend:
-    working_dir: ./backend    # Makefile here is auto-discovered
-
-    services:
-      api:
-        command: go run .
-        working_dir: ./backend
-
-    tasks:
-      deploy:
-        command: ./scripts/deploy.sh
-        description: Deploy to production
-```
-
-If `./backend/Makefile` contains:
-
-```makefile
-.PHONY: build test lint
-
-## build: compile for current platform
-build:
-    go build -o bin/api .
-
-## test: run unit tests
-test:
-    go test ./...
-
-## lint: run linter
-lint:
-    golangci-lint run
-```
-
-Then `rig tasks` shows `backend.build`, `backend.test`, `backend.lint` alongside `backend.deploy`. Running them:
+**Zero-config.** In a folder with just a `Makefile`:
 
 ```bash
-rig run backend.build               # runs: make build
-rig run backend.test -- -v -run Foo # runs: make test -v -run Foo
+rig tasks              # lists the Makefile's targets
+rig run build          # runs: make build
+rig run test -- -v     # runs: make test -v   (args pass through after --)
 ```
 
-**Which targets are exposed:** `.PHONY` targets only. If no `.PHONY` is declared, targets with `## name: description` comments are used instead. Targets starting with `.` or `_` are always excluded.
+**Folder namespacing.** Targets are named by the folder they live in, relative to where you
+run `rig`:
 
-**Descriptions** are extracted from `## target: description` comment lines in the Makefile.
+- `./Makefile` targets are bare: `build`, `test`
+- `./sub/Makefile` targets become `sub.<target>`: `sub.lint`
+- deeper folders dot further: `sub/api.build`
 
-**Rigfile tasks override Makefile targets** — if both define a task with the same name, the rigfile wins.
+Each Makefile's **default goal** (its `.DEFAULT_GOAL`, else its first target) is marked with
+`→` in `rig tasks`.
 
-**Explicit Makefile paths** can be added with `makefiles:` for non-standard filenames or additional files:
+**Which targets are exposed.** Every real rule target. Excluded: pattern rules (`%.o`),
+special targets (anything starting with `.`, e.g. `.PHONY`), variable-expanded targets
+(`$(GEN)`), and assignments. `include` / `-include` directives are followed and their
+targets merged in file order.
+
+**Descriptions** come from an inline `## doc` comment on the target's rule line:
+
+```makefile
+build: ## Compile for the current platform
+	go build -o bin/api .
+```
+
+**Adopting a Makefile into a named group.** A `dir:` group backs itself with a folder and
+adopts that folder's `Makefile` (and `rig.yaml`, if present). This also renames the folder:
 
 ```yaml
 groups:
-  tools:
-    working_dir: .
-    makefiles:
-      - ./scripts/ci.mk        # non-standard name — uses make -f ci.mk
-      - ./tools/release.mk
+  relay:
+    dir: ./lcm-relay      # ./lcm-relay/Makefile targets → relay.<target>
 ```
 
-Multiple Makefiles merge into the same group namespace.
+**Rig tasks override Makefile targets.** If a `rig.yaml` task and a Makefile target share a
+name in the same group, the rig task wins.
+
+For a non-standard Makefile name (e.g. `ci.mk`), `include` it from a standard `Makefile` —
+rig follows includes and picks up its targets.
 
 ### env_file
 
@@ -404,47 +410,55 @@ Each requirement has a `check` command and a remediation `command`:
 
 Requirements are evaluated in order before the service starts. The same check command is only remediated once per `rig` invocation, even if multiple services share the same requirement. Requirements do not apply to tasks.
 
-### Multi-File Config
+### Multi-file and folder composition
 
-For monorepos or larger projects, configs can import other configs:
+rig builds a single **group tree**, discovered downward from where you run it
+(gitignore-aware). There is nothing to import — folders compose automatically:
+
+- Any subfolder holding a `Makefile` or a rig file (`rig.yaml`, `rig.yml`, `*.rig.yaml`)
+  auto-becomes a child group named by its folder.
+- Nested folders nest as dotted groups.
+- The root file's top-level `tasks`/`services` attach to the root, so their names are bare.
+
+Reshape or extend the tree with authored `groups:`:
 
 ```yaml
-# monorepo/rig.yaml
-imports:
-  - shared/db/rig.yaml
-  - backend/rig.yaml
-  - frontend/rig.yaml
-  - infra.rig.yaml          # *.rig.yaml naming supported
+# rig.yaml at the repo root
+environment:
+  REGION: us-east-1         # cascades to every group below (ancestor-wins)
+
+services:
+  gateway:
+    command: ./gateway
+    working_dir: .
 
 groups:
-  # ... local groups
+  relay:
+    dir: ./lcm-relay         # adopt + rename a folder (its Makefile and/or rig file)
+    environment:
+      RELAY_MODE: primary
+
+  infra:
+    paths:                   # pull explicit files into this group
+      - ./infra/db.rig.yaml
+      - ./infra/cache.rig.yaml
 ```
 
-Key behaviors:
-- **Upward search**: `rig` searches upward from CWD to find the nearest config
-- **Path expansion**: Each file's paths (`working_dir`, `env_file`) are relative to its own location
-- **Flat merge**: All imported groups merge into a single namespace
-- **Deduplication**: Same file imported by multiple configs is loaded once
-- **Validation**: Duplicate group/service names and circular imports are errors
+- **`dir:`** backs a group with a directory — discovered like the root (Makefile and/or
+  rig file) — and renames it to the group name.
+- **`paths:`** pulls explicit rig files into a group, wherever they live.
+- **inline** `tasks` / `services` / child `groups:` layer on top of whatever `dir:` / `paths:`
+  brought in.
 
-**Discovery**: Use `rig discover` to scan for rig files and update imports:
+There is no `imports:` and no upward search: composition is folders plus `dir:` / `paths:`,
+discovered from the current directory down.
 
-```bash
-rig discover              # Interactive - prompt before changes
-rig discover --dry-run    # Show what would be imported
-rig discover --yes        # Auto-accept changes
-```
+**Environment cascade (ancestor-wins).** `environment` and `env_file` set on a group apply
+to everything beneath it, and a higher (nearer-root) group overrides a lower one. This lets
+you wrap a vendored project and inject env from above without editing it. Env files are read
+at run/start time, not when listing tasks.
 
-**Running from subdirectories**: When you run `rig` from a subdirectory, it finds the nearest config and uses that context:
-
-```bash
-cd monorepo/backend       # Has its own rig.yaml importing shared/db
-rig ps                    # Shows backend + database services only
-cd monorepo               # Root rig.yaml imports everything
-rig ps                    # Shows ALL services
-```
-
-See [example/](example/) for a complete setup demonstrating imports.
+See [example/](example/) for a working multi-folder setup.
 
 ## Log files
 

@@ -81,62 +81,60 @@
 - JSON output (`rig config --json`) includes full details
 - Use `skip` Set to control which fields appear in text output
 
-### Multi-File Config
+### Group Tree
 
-- Path normalization uses URL class: `new URL(path, "file:///").pathname` - cleaner than manual string manipulation
-- Circular import detection needs normalized absolute paths to work correctly
-- File discovery respects .gitignore (via `ignore` crate) to avoid pulling in rig files from dependencies
-- Deduplication must happen by absolute normalized path, not relative path
-- Path expansion must happen per-file before merging (each config's paths relative to its own location)
-- `LoadContext` pattern works well: track `configPath`, `configDir`, `loaded` Set, and `importChain` for recursion
+- Discovery walks **downward** from CWD (or a `dir:`'s directory), gitignore-aware (via `ignore` crate) — no upward search, no import list
+- One tree: rig-authored units and discovered Makefile targets share the same `Group` nodes; a single tree-backed provider carries both
+- Path expansion is per-file: each rig file's `working_dir`/`env_file` resolve relative to its own directory before folding into the tree
+- Folder-auto child groups: a subdir holding a Makefile or a rig file becomes a group named by its folder
+- `dir:` adopts + renames a folder; `paths:` pulls explicit files; both mark their targets as adopted so folder-auto discovery doesn't add the same folder/file twice
+- `environment`/`env_file` cascade ancestor-wins; env files load at run/start, never at list time
+- A `visited` set of normalized dirs guards against `dir:` cycles
 
 ## Config Structure
 
-Config uses multi-group format with services and tasks nested under groups:
+Config is a folder-aware **group tree**. A group is backed by any of: a directory
+(`dir:`, discovered — Makefile and/or rig file), explicit files (`paths:`), inline
+`tasks`/`services`, and/or child `groups:`. Top-level `tasks`/`services`/`environment`/
+`env_file` need no wrapper — they attach to the root (CWD → bare names).
 
 ```yaml
-imports:
-  - db/rig.yaml
-  - backend/rig.yaml
+environment:
+  REGION: us-east-1          # cascades ancestor-wins to every group below
+
+services:
+  gateway: { command: ./gateway, working_dir: . }
 
 groups:
-  backend:
+  relay:
+    dir: ./lcm-relay         # adopt + rename a folder (its Makefile and/or rig file)
+  infra:
+    paths: [./infra/db.rig.yaml]
     services:
-      api: { command: ..., working_dir: ... }
-      db:  { command: ..., working_dir: ... }
-    tasks:
-      deploy: { command: ..., working_dir: ... }
-  frontend:
-    services:
-      web: { command: ..., working_dir: ... }
+      cache: { command: ..., working_dir: ... }
 ```
 
 Key rules:
-- Service names must be unique across all groups (even across imported files)
-- Groups can have services, tasks, or both
-- Groups are targeted with `-g/--group` flag: `rig start -g backend`
-- Default CLI targets are services: `rig start api db`
-- Tasks are run via `rig run group.task` or `rig run group.service.task`
+- Names are folder-namespaced dotted paths: `relay.build`, `infra.cache`
+- A subfolder with a Makefile or rig file auto-becomes a child group; `dir:`/`paths:` reshape or rename
+- Service names must be unique across the whole tree
+- Groups are targeted with `-g/--group` using the dotted path: `rig start -g relay`
+- Default CLI targets are services: `rig start gateway`
+- Tasks run via `rig run <name>`, `rig run group.task`, or `rig run group.service.task`; a short name works when unambiguous
+- Rig-authored tasks win over Makefile targets on a name clash
 - One SessionManager instance per group (tmux sessions: `{group}-{service}`)
+- No `imports:` — composition is folders plus `dir:`/`paths:`
 
-### Multi-File Config
+### Folder Composition
 
-Configs can import other configs to compose a service graph:
+The tree is discovered downward from CWD (gitignore-aware). Folders compose automatically;
+`dir:`/`paths:` reshape.
 
-```yaml
-imports:
-  - shared/db/rig.yaml      # Relative path from this config's location
-  - ../common/rig.yaml      # Parent directory traversal supported
-  - infra.rig.yaml          # *.rig.yaml naming pattern supported
-```
-
-Key rules:
-- `rig` searches upward from CWD to find the nearest config file
-- Each file's paths (`working_dir`, `env_file`) are expanded relative to its own location
-- Same file imported multiple times = loaded once (deduped by absolute path)
-- Circular imports = error
-- Duplicate group or service names = error
-- `rig discover` scans for rig files and suggests imports
+- Discovery walks down from CWD (or a `dir:`'s directory) — no upward search
+- Each rig file's paths (`working_dir`, `env_file`) expand relative to its own location
+- A subdir holding a Makefile or rig file becomes a child group named by the folder
+- `dir:` adopts + renames a folder; `paths:` pulls explicit files; both dedup against auto-discovery
+- Duplicate service names across the tree = error; `dir:` cycles are guarded by a visited set
 
 ## Code Structure
 
@@ -145,12 +143,17 @@ src/
   main.rs       → Entry point: CLI parsing (clap derive) and command dispatch
   lib.rs        → Library root, re-exports modules
   output.rs     → Terminal output: colors, logging, display helpers
-  config.rs     → Types, schema validation, config loading/parsing/querying
+  config.rs     → Types, schema validation, group-tree loading/parsing/querying, env cascade
+  providers/    → Task providers over the group tree
+    mod.rs      → `TaskProvider` trait, `providers()` builder, `resolve_across()` precedence
+    rig.rs      → Tree-backed provider: rig-authored + Makefile tasks
+    makefile.rs → Makefile parsing (targets, docs, default goal, includes) + `make` commands
   process.rs    → SessionManager, process tree/metrics, tmux checks, log streaming
-  commands.rs   → CLI command implementations (start/stop/ps/top/logs/tasks/discover)
+  commands.rs   → CLI command implementations (start/stop/ps/top/logs/tasks/run)
 
-Module dependency graph (strict DAG):
+Module dependency graph:
   output ← config ← process ← commands ← main
+                 ← providers ← main
 
 install.sh:
   Platform detection     → OS, arch
@@ -163,13 +166,13 @@ install.sh:
 
 1. **Orphan processes**: Old processes from different systems won't be in tmux. Port-based cleanup was removed - tmux handles lifecycle properly now.
 
-2. **Path resolution**: `working_dir` in config is relative to config file location, not CWD. With multi-file imports, each config expands paths relative to its own location.
+2. **Path resolution**: `working_dir` in config is relative to config file location, not CWD. Across the tree, each rig file expands its paths relative to its own location.
 
 3. **Raw mode stdin**: Intercepts Ctrl+C. Must check for byte 3 explicitly.
 
 4. **lsof on macOS**: `-p` flag doesn't filter with `-i`. Parse output and filter by PID.
 
-5. **Test session cleanup**: When testing multi-file configs, sessions may be created in different groups. The `cleanupSessions()` helper must track all possible test group prefixes.
+5. **Test session cleanup**: When testing configs that span folders, sessions may be created in different groups. The `cleanupSessions()` helper must track all possible test group prefixes.
 
 ## Local Development
 
@@ -259,33 +262,22 @@ test/
 
 Each test file uses `TestContext` from `common/mod.rs` which handles temp directory creation, writing test configs, running the rig binary, and tmux session cleanup.
 
-### Makefile Provider
+### Makefile Support
 
-Groups support a `working_dir` field. When set, a `Makefile` in that directory is automatically discovered and its `.PHONY` targets become tasks under the group namespace.
+Makefiles are first-class citizens of the group tree, not a bolted-on provider keyed off
+`working_dir`. Any folder backing a group (the root, a folder-auto child, or a `dir:` group)
+that contains a standard Makefile contributes its targets as tasks in that group's namespace.
+Discovery is folded into the group tree during `try_load_config`; a single tree-backed
+provider carries both rig-authored and make-sourced tasks.
 
-- Target discovery: `.PHONY` targets only. Falls back to `## target: description` documented targets when no `.PHONY` is declared.
-- Descriptions: extracted from `## target: description` comment lines (must be non-indented, at column 0).
-- Commands: `make <target>` for standard `Makefile`; `make -f <filename> <target>` for non-standard filenames.
-- Rigfile tasks always override Makefile targets on name collision (rigfile is authoritative).
-- Explicit extra Makefiles via `makefiles:` list (deduplicated against auto-discovered).
-- `working_dir` also serves as the default `working_dir` for group-level tasks that don't specify one.
-
-```yaml
-groups:
-  backend:
-    working_dir: ./backend   # auto-discovers ./backend/Makefile; tasks inherit this dir
-    makefiles:
-      - ./tools/ci.mk        # additional explicit Makefile
-    services:
-      api: { command: go run ., working_dir: ./backend }
-    tasks:
-      deploy: { command: ./scripts/deploy.sh }   # inherits working_dir from group
-```
-
-The provider model is designed for extension: `services`, `tasks`, and `makefiles` are named providers within a group. Future providers (e.g., `npm-scripts`, `justfile`) follow the same pattern.
+- Standard names: `Makefile`, `makefile`, `GNUmakefile` (picked in that priority per dir).
+- Target discovery: every real rule target. Excluded: `.`-prefixed specials (`.PHONY`), pattern rules (`%`), variable-expanded targets (`$`), and assignments. `include`/`-include` files are followed and merged in file order.
+- Descriptions: inline `## doc` on the target's rule line.
+- Default goal: `.DEFAULT_GOAL` if set, else the first target; carried on `ResolvedTask.default_goal` and marked `→` in listings.
+- Commands: `make <target>` for a standard Makefile; `make -f <file> <target>` for a non-standard filename (reached via `include`).
+- Rig-authored tasks win over Makefile targets on a name clash. Precedence keys off `TaskDef.source` (`Rig` vs `Make`), not provider order, since both live in one tree-backed provider.
+- Non-standard standalone Makefiles are not auto-discovered — `include` them from a standard Makefile.
 
 ## Future Considerations
 
-- Import globs: `imports: ["services/*/rig.yaml"]`
-- `rig discover --watch` for continuous import updates
-- Additional task providers: npm scripts, Justfile, etc.
+- Additional task providers: npm scripts, Justfile, etc. — feed the same group tree via the `TaskProvider` trait.
