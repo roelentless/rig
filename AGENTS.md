@@ -83,7 +83,8 @@
 
 ### Group Tree
 
-- Discovery walks **downward** from CWD (or a `dir:`'s directory), gitignore-aware (via `ignore` crate) — no upward search, no import list
+- The root is the nearest ancestor of CWD (incl. CWD) directly holding a rig file or Makefile — found by an **upward** search (direct reads, gitignore-independent), so rig run from any subdir finds the project root. From that root, discovery walks **downward** (or from a `dir:`'s directory), gitignore-aware (via `ignore` crate). No import list
+- All rig files directly in one directory (`rig.yaml`, `rig.yml`, `*.rig.yaml`) compose into that group at the same level; a duplicate task/service/child-group name across siblings is a hard error
 - One tree: rig-authored units and discovered Makefile targets share the same `Group` nodes; a single tree-backed provider carries both
 - Path expansion is per-file: each rig file's `working_dir`/`env_file` resolve relative to its own directory before folding into the tree
 - Folder-auto child groups: a subdir holding a Makefile or a rig file becomes a group named by its folder
@@ -127,10 +128,12 @@ Key rules:
 
 ### Folder Composition
 
-The tree is discovered downward from CWD (gitignore-aware). Folders compose automatically;
-`dir:`/`paths:` reshape.
+The root is the nearest ancestor of CWD (incl. CWD) directly holding a rig file or Makefile,
+found by an upward search; the tree is then discovered downward from that root (gitignore-aware).
+Folders compose automatically; `dir:`/`paths:` reshape.
 
-- Discovery walks down from CWD (or a `dir:`'s directory) — no upward search
+- Upward search to the project root (direct reads, gitignore-independent), then discovery walks down from there (or from a `dir:`'s directory)
+- All rig files directly in one dir compose at the same level; duplicate task/service/child-group names across siblings error
 - Each rig file's paths (`working_dir`, `env_file`) expand relative to its own location
 - A subdir holding a Makefile or rig file becomes a child group named by the folder
 - `dir:` adopts + renames a folder; `paths:` pulls explicit files; both dedup against auto-discovery

@@ -430,3 +430,73 @@ groups:
         result.stderr
     );
 }
+
+#[test]
+fn upward_search_discovers_ancestor_root() {
+    // Run from a nested subdir with no config: upward search finds the ancestor
+    // rig.yaml as the project root and lists its tasks.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  root-task:\n    command: echo root-out\n    working_dir: /tmp\n",
+    );
+    ctx.write_file("nested/deep/placeholder.txt", "");
+
+    let tasks = ctx.rig_in("nested/deep", &["tasks"]);
+    assert_eq!(tasks.code, 0, "stderr: {}", tasks.stderr);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("root-task"), "tasks: {}", clean);
+}
+
+#[test]
+fn sibling_rig_files_compose_same_level() {
+    // rig.yaml + extra.rig.yaml in one dir compose into the same (root) group:
+    // both files' tasks and services surface together.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  build-main:\n    command: echo main\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "extra.rig.yaml",
+        "tasks:\n  build-extra:\n    command: echo extra\n    working_dir: /tmp\n\
+services:\n  svc-extra:\n    command: sh -c \"echo svc; sleep 30\"\n    working_dir: /tmp\n",
+    );
+
+    let tasks = ctx.rig(&["tasks"]);
+    assert_eq!(tasks.code, 0, "stderr: {}", tasks.stderr);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("build-main"), "tasks: {}", clean);
+    assert!(clean.contains("build-extra"), "tasks: {}", clean);
+
+    let config = ctx.rig(&["config"]);
+    assert_eq!(config.code, 0, "stderr: {}", config.stderr);
+    assert!(
+        config.stdout.contains("svc-extra"),
+        "config: {}",
+        config.stdout
+    );
+}
+
+#[test]
+fn sibling_duplicate_task_name_errors() {
+    // The same task name in two sibling rig files in one dir is a hard error —
+    // the conflict is named, not silently dropped.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  dup:\n    command: echo one\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "extra.rig.yaml",
+        "tasks:\n  dup:\n    command: echo two\n    working_dir: /tmp\n",
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Duplicate task 'dup'"),
+        "stderr: {}",
+        result.stderr
+    );
+}

@@ -1034,6 +1034,36 @@ fn pick_config_in_dir(dir: &str) -> Option<PathBuf> {
     star.into_iter().next()
 }
 
+/// Every rig config file directly inside `dir` (read directly, so it is
+/// gitignore-independent like [`pick_config_in_dir`]). Deterministic order:
+/// canonical names first (`rig.yaml`, `rig.yml`), then each `*.rig.yaml` sorted.
+/// These siblings compose into one group at the same level.
+fn sibling_config_files(dir: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = CONFIG_NAMES
+        .iter()
+        .map(|name| Path::new(dir).join(name))
+        .filter(|p| p.is_file())
+        .collect();
+    let mut star: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with(".rig.yaml") && n != "rig.yaml"
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+    star.sort();
+    files.extend(star);
+    files
+}
+
 /// Every rig config file under `dir` (gitignore-aware, hidden dirs skipped).
 fn scan_rig_files(dir: &str) -> Vec<PathBuf> {
     crate::commands::walk_ignored_files(dir)
@@ -1136,14 +1166,54 @@ fn build_dir_group(
     let mut adopted_dirs: HashSet<String> = HashSet::new();
     let mut adopted_files: HashSet<String> = HashSet::new();
 
-    if let Some(file) = pick_config_in_dir(&dir_norm) {
+    // Compose ALL rig files directly in this dir at the same level: their props,
+    // tasks, services, and authored child groups merge into one group. A duplicate
+    // task, service, or child-group NAME across siblings is a hard error (silently
+    // dropping one was the bug). Env maps merge last-file-wins; a duplicate KEY is
+    // fine. Every sibling file is marked adopted so folder-auto never re-adds it.
+    let siblings = sibling_config_files(&dir_norm);
+    for file in &siblings {
+        adopted_files.insert(normalize_path(&file.to_string_lossy()));
+    }
+    let mut task_src: HashMap<String, String> = HashMap::new();
+    let mut svc_src: HashMap<String, String> = HashMap::new();
+    let mut grp_src: HashMap<String, String> = HashMap::new();
+    for file in &siblings {
         let file_str = file.to_string_lossy().to_string();
-        adopted_files.insert(normalize_path(&file_str));
         let parsed = parse_file(&file_str)?;
-        group.props = parsed.props;
-        group.tasks = parsed.tasks;
-        group.services = parsed.services;
+        if parsed.props.working_dir.is_some() {
+            group.props.working_dir = parsed.props.working_dir;
+        }
+        group.props.env.extend(parsed.props.env);
+        group.props.env_files.extend(parsed.props.env_files);
+        for (tname, tdef) in parsed.tasks {
+            if let Some(prev) = task_src.get(&tname) {
+                return Err(ConfigError::generic(format!(
+                    "Duplicate task '{}' defined in both {} and {}",
+                    tname, prev, file_str
+                )));
+            }
+            task_src.insert(tname.clone(), file_str.clone());
+            group.tasks.push((tname, tdef));
+        }
+        for (sname, sdef) in parsed.services {
+            if let Some(prev) = svc_src.get(&sname) {
+                return Err(ConfigError::generic(format!(
+                    "Duplicate service '{}' defined in both {} and {}",
+                    sname, prev, file_str
+                )));
+            }
+            svc_src.insert(sname.clone(), file_str.clone());
+            group.services.push((sname, sdef));
+        }
         for (cname, cbody) in parsed.child_groups {
+            if let Some(prev) = grp_src.get(&cname) {
+                return Err(ConfigError::generic(format!(
+                    "Duplicate group '{}' defined in both {} and {}",
+                    cname, prev, file_str
+                )));
+            }
+            grp_src.insert(cname.clone(), file_str.clone());
             let child = build_child_group(
                 &cname,
                 &cbody,
@@ -1350,9 +1420,27 @@ fn collect_service_names(g: &Group, out: &mut HashSet<String>) {
 // CONFIG LOADING
 // ============================================================================
 
-/// Build the group tree rooted at `config_path`'s directory (or CWD). Returns
-/// `Ok(None)` when no rig config exists anywhere under the root (make-only is
-/// still valid); a malformed config still fails loudly.
+/// Walk upward from `start` (inclusive) to the filesystem root, returning the
+/// nearest ancestor that directly holds a rig config file or a standard Makefile
+/// — the project root. Direct reads only (gitignore-independent), matching the
+/// entry-dir config rule. `None` if nothing is found up to the root.
+fn find_project_root(start: &str) -> Option<String> {
+    let mut dir = PathBuf::from(normalize_path(start));
+    loop {
+        let d = dir.to_string_lossy().to_string();
+        if pick_config_in_dir(&d).is_some() || own_makefile(&d).is_some() {
+            return Some(normalize_path(&d));
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Build the group tree rooted at `config_path`'s directory, else at the nearest
+/// ancestor of CWD holding a rig file or Makefile (upward search), else CWD.
+/// Returns `Ok(None)` when no rig config or Makefile is found; a malformed config
+/// still fails loudly.
 pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, String)>, ConfigError> {
     let base = match config_path {
         Some(p) => Path::new(p)
@@ -1360,10 +1448,18 @@ pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, Strin
             .map(|d| d.to_string_lossy().to_string())
             .filter(|d| !d.is_empty())
             .unwrap_or_else(|| ".".to_string()),
-        None => std::env::current_dir()
-            .map_err(|e| ConfigError::generic(format!("Failed to get current directory: {}", e)))?
-            .to_string_lossy()
-            .to_string(),
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| {
+                    ConfigError::generic(format!("Failed to get current directory: {}", e))
+                })?
+                .to_string_lossy()
+                .to_string();
+            // Nearest ancestor (incl. CWD) with a direct rig file/Makefile is the
+            // project root, so rig run from any subdir finds it. Fall back to CWD
+            // (downward discovery) when nothing is found up to the fs root.
+            find_project_root(&cwd).unwrap_or(cwd)
+        }
     };
     let base = normalize_path(&base);
 

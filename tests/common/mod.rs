@@ -139,6 +139,22 @@ impl TestContext {
         }
     }
 
+    /// Run rig with CWD set to `subdir` under the temp root (must exist). Used to
+    /// exercise upward project-root discovery from a nested directory.
+    pub fn rig_in(&self, subdir: &str, args: &[&str]) -> RigResult {
+        let output = Command::new(rig_binary())
+            .args(args)
+            .current_dir(self.dir.path().join(subdir))
+            .output()
+            .expect("Failed to run rig binary");
+
+        RigResult {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        }
+    }
+
     pub fn setup_test_config(&self) {
         self.write_file("rig.yaml", TEST_CONFIG);
     }

@@ -208,8 +208,10 @@ CONFIG:
   deeper. Each Makefile's default goal is marked with → in listings.
 
   For services (and richer tasks) add rig.yaml, rig.yml, or *.rig.yaml. Config
-  is a folder-aware group tree, discovered downward from the current directory
-  (gitignore-aware). Top-level tasks/services/environment/env_file need no
+  is a folder-aware group tree: rig searches upward for the nearest directory
+  holding a rig file or Makefile (the project root) and builds the tree downward
+  from there (gitignore-aware). Multiple rig files in one directory compose at
+  the same level. Top-level tasks/services/environment/env_file need no
   wrapper (root = CWD → bare names). Any subfolder holding a Makefile or rig
   file auto-becomes a child group named by its folder. Authored `groups:`
   reshape the tree: a group is backed by `dir:` (adopt/rename a folder with its
@@ -412,8 +414,11 @@ Requirements are evaluated in order before the service starts. The same check co
 
 ### Multi-file and folder composition
 
-rig builds a single **group tree**, discovered downward from where you run it
-(gitignore-aware). There is nothing to import — folders compose automatically:
+rig builds a single **group tree**. It searches upward for the nearest directory
+holding a rig file or Makefile (the project root) and builds the tree downward
+from there (gitignore-aware), so you can run rig from any subdirectory. There is
+nothing to import — folders compose automatically, and multiple rig files in one
+directory compose at the same level:
 
 - Any subfolder holding a `Makefile` or a rig file (`rig.yaml`, `rig.yml`, `*.rig.yaml`)
   auto-becomes a child group named by its folder.

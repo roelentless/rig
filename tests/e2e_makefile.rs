@@ -417,3 +417,45 @@ groups:
         result.stdout
     );
 }
+
+#[test]
+fn upward_search_makefile_ancestor_root() {
+    // Run from a nested subdir with no config: upward search finds the ancestor
+    // Makefile as the project root and lists its targets.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "root-target:\n\t@echo root-target-out\n");
+    ctx.write_file("nested/deep/placeholder.txt", "");
+
+    let tasks = ctx.rig_in("nested/deep", &["tasks"]);
+    assert_eq!(tasks.code, 0, "stderr: {}", tasks.stderr);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("root-target"), "tasks: {}", clean);
+}
+
+#[test]
+fn nearest_root_wins_over_farther() {
+    // A closer ancestor with a Makefile stops the upward search before a farther
+    // rig.yaml: the root becomes `mid`, so `mid`'s target lists and the farther
+    // rig.yaml's task is out of scope.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  far-task:\n    command: echo far\n    working_dir: /tmp\n",
+    );
+    ctx.write_file("mid/Makefile", "mid-target:\n\t@echo mid-out\n");
+    ctx.write_file("mid/deep/placeholder.txt", "");
+
+    let tasks = ctx.rig_in("mid/deep", &["tasks"]);
+    assert_eq!(tasks.code, 0, "stderr: {}", tasks.stderr);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(
+        clean.contains("mid-target"),
+        "nearest root should be mid: {}",
+        clean
+    );
+    assert!(
+        !clean.contains("far-task"),
+        "farther rig.yaml must not be the root: {}",
+        clean
+    );
+}
