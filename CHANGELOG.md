@@ -2,6 +2,13 @@
 
 ## 2026-07-01
 
+- bugfix: cancelling `rig run` no longer orphans the `make`/recipe process tree
+- improvement: tasks default `working_dir` to their config's folder
+- improvement: `rig config --json/--raw` shows the real group tree (rig + make)
+- improvement: `-g/--group` scopes the whole subtree, not just one level
+- improvement: `rig init` scaffolds the wrapper-free top-level format
+- feature: multiple rig files in one folder compose at the same level
+- feature: `rig` works from any subdirectory — searches upward to the project root
 - feature: first-class Makefile support — zero-config, folder-namespaced tasks
 - feature: Makefile default goal marked with `→` in `rig tasks`
 - feature: group-tree config — subfolders auto-compose into namespaced groups

@@ -40,6 +40,10 @@
 - Uses clap with derive macros for argument parsing
 - Custom help text (not clap's auto-generated help)
 
+### Task cancellation
+
+- `rig run`/`task` supervises the task subprocess: on SIGINT/SIGTERM it SIGKILLs its whole descendant tree (sysinfo snapshot) before exiting 130/143, so a cancelled `make` run leaves no orphaned recipe — matching make's own behavior. Task-run path only; tmux-managed services stop via `kill-session`, so this must not touch the service path
+
 ### Installer (`install.sh`)
 
 - POSIX `sh` only, no bashisms — the script is piped via `curl | sh`
@@ -83,7 +87,7 @@
 
 ### Group Tree
 
-- The root is the nearest ancestor of CWD (incl. CWD) directly holding a rig file or Makefile — found by an **upward** search (direct reads, gitignore-independent), so rig run from any subdir finds the project root. From that root, discovery walks **downward** (or from a `dir:`'s directory), gitignore-aware (via `ignore` crate). No import list
+- The root is the nearest ancestor of CWD (incl. CWD) directly holding a rig file or Makefile — found by an **upward** search (direct reads, gitignore-independent), so rig run from any subdir finds the project root. From that root, discovery walks **downward** (or from a `dir:`'s directory), gitignore-aware (via `ignore` crate)
 - All rig files directly in one directory (`rig.yaml`, `rig.yml`, `*.rig.yaml`) compose into that group at the same level; a duplicate task/service/child-group name across siblings is a hard error
 - One tree: rig-authored units and discovered Makefile targets share the same `Group` nodes; a single tree-backed provider carries both
 - Path expansion is per-file: each rig file's `working_dir`/`env_file` resolve relative to its own directory before folding into the tree
@@ -124,19 +128,9 @@ Key rules:
 - Tasks run via `rig run <name>`, `rig run group.task`, or `rig run group.service.task`; a short name works when unambiguous
 - Rig-authored tasks win over Makefile targets on a name clash
 - One SessionManager instance per group (tmux sessions: `{group}-{service}`)
-- No `imports:` — composition is folders plus `dir:`/`paths:`
 
-### Folder Composition
-
-The root is the nearest ancestor of CWD (incl. CWD) directly holding a rig file or Makefile,
-found by an upward search; the tree is then discovered downward from that root (gitignore-aware).
-Folders compose automatically; `dir:`/`paths:` reshape.
-
-- Upward search to the project root (direct reads, gitignore-independent), then discovery walks down from there (or from a `dir:`'s directory)
-- All rig files directly in one dir compose at the same level; duplicate task/service/child-group names across siblings error
-- Each rig file's paths (`working_dir`, `env_file`) expand relative to its own location
-- A subdir holding a Makefile or rig file becomes a child group named by the folder
-- `dir:` adopts + renames a folder; `paths:` pulls explicit files; both dedup against auto-discovery
+Discovery, per-file path resolution, sibling composition, and folder-auto grouping are
+detailed under Key Learnings → Group Tree above.
 - Duplicate service names across the tree = error; `dir:` cycles are guarded by a visited set
 
 ## Code Structure
@@ -280,6 +274,7 @@ provider carries both rig-authored and make-sourced tasks.
 - Commands: `make <target>` for a standard Makefile; `make -f <file> <target>` for a non-standard filename (reached via `include`).
 - Rig-authored tasks win over Makefile targets on a name clash. Precedence keys off `TaskDef.source` (`Rig` vs `Make`), not provider order, since both live in one tree-backed provider.
 - Non-standard standalone Makefiles are not auto-discovered — `include` them from a standard Makefile.
+- The runtime contract (exit-code passthrough, env/`-- VAR=val` forwarding into recipes, stdout/stderr, working dir, cancellation) is pinned by `tests/e2e_make_compat.rs` + `tests/fixtures/make/`.
 
 ## Future Considerations
 

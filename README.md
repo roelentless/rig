@@ -456,8 +456,9 @@ groups:
 - **inline** `tasks` / `services` / child `groups:` layer on top of whatever `dir:` / `paths:`
   brought in.
 
-There is no `imports:` and no upward search: composition is folders plus `dir:` / `paths:`,
-discovered from the current directory down.
+Composition is folders plus `dir:` / `paths:`. rig finds the project root by searching
+upward from the current directory to the nearest ancestor holding a rig file or Makefile,
+then discovers the tree downward from there — so `rig` works from any subdirectory.
 
 **Environment cascade (ancestor-wins).** `environment` and `env_file` set on a group apply
 to everything beneath it, and a higher (nearer-root) group overrides a lower one. This lets
