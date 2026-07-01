@@ -129,6 +129,7 @@ mod tests {
             env_files: Vec::new(),
             description: None,
             source: TaskSource::Rig,
+            default_goal: false,
         }
     }
 
@@ -231,6 +232,7 @@ mod tests {
             environment: None,
             description: None,
             source: TaskSource::Rig,
+            default_goal: false,
         };
 
         let provider = RigProvider::new(sample_config());
@@ -254,6 +256,7 @@ mod tests {
             environment: None,
             description: None,
             source: TaskSource::Rig,
+            default_goal: false,
         };
 
         let provider = RigProvider::new(sample_config());

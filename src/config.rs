@@ -90,6 +90,10 @@ pub struct TaskDef {
     /// Rig-authored (default) vs discovered Makefile target. Not serialized.
     #[serde(skip)]
     pub source: TaskSource,
+    /// True when this is its Makefile's default goal (MAKE tasks only). Marks
+    /// the `→` row in listings. Not serialized.
+    #[serde(skip)]
+    pub default_goal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +188,8 @@ pub struct ResolvedTask {
     pub environment: Option<HashMap<String, String>>,
     pub description: Option<String>,
     pub source: TaskSource,
+    /// This task is its Makefile's default goal (MAKE tasks only; rig never).
+    pub default_goal: bool,
 }
 
 // ============================================================================
@@ -714,6 +720,7 @@ fn parse_service_task(
             .and_then(|v| v.as_str())
             .map(String::from),
         source: TaskSource::Rig,
+        default_goal: false,
     })
 }
 
@@ -891,6 +898,7 @@ fn parse_group_task(
             .and_then(|v| v.as_str())
             .map(String::from),
         source: TaskSource::Rig,
+        default_goal: false,
     })
 }
 
@@ -1117,11 +1125,13 @@ fn add_make_tasks(group: &mut Group, dir: &str) {
         None => return,
     };
     let taken: HashSet<String> = group.tasks.iter().map(|(n, _)| n.clone()).collect();
-    for (target, description) in crate::providers::makefile::parse_makefile(&mf) {
+    let (targets, goal) = crate::providers::makefile::parse_makefile_with_goal(&mf);
+    for (target, description) in targets {
         if taken.contains(&target) {
             continue;
         }
         let command = crate::providers::makefile::make_command(&mf, &target);
+        let default_goal = goal.as_deref() == Some(target.as_str());
         group.tasks.push((
             target,
             TaskDef {
@@ -1132,6 +1142,7 @@ fn add_make_tasks(group: &mut Group, dir: &str) {
                 env_files: Vec::new(),
                 description,
                 source: TaskSource::Make,
+                default_goal,
             },
         ));
     }
@@ -1599,6 +1610,7 @@ fn collect_tasks<'a>(
             environment: if eff.is_empty() { None } else { Some(eff) },
             description: tdef.description.clone(),
             source: tdef.source,
+            default_goal: tdef.default_goal,
         });
     }
 
@@ -1628,6 +1640,7 @@ fn collect_tasks<'a>(
                     environment: if eff.is_empty() { None } else { Some(eff) },
                     description: tdef.description.clone(),
                     source: TaskSource::Rig,
+                    default_goal: false,
                 });
             }
         }

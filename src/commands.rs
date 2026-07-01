@@ -761,8 +761,11 @@ pub fn cmd_task_list(tasks: &[ResolvedTask], group_filter: Option<&str>) -> Resu
         } else {
             String::new()
         };
+        // Default-goal marker (make tasks only), aligned with a 2-col prefix.
+        let marker = if task.default_goal { "→ " } else { "  " };
         print(&format!(
-            "{}{:<30}{} {}{}",
+            "{}{}{:<30}{} {}{}",
+            marker,
             c("cyan"),
             task.path,
             c("reset"),

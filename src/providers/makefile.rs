@@ -41,10 +41,60 @@ pub fn make_command(makefile: &Path, target: &str) -> String {
 /// in first-seen order. Inline `## doc` after a target rule becomes the
 /// description; an empty or absent doc becomes `None`. Dedup is first-wins.
 pub fn parse_makefile(path: &Path) -> Vec<(String, Option<String>)> {
+    parse_targets(&concat_makefile(path))
+}
+
+/// Parse a Makefile like [`parse_makefile`], additionally reporting its default
+/// goal: the last explicit `.DEFAULT_GOAL := NAME` assignment if any, else the
+/// first emitted target in file order (`None` when the Makefile has no targets).
+/// Mirrors makex's `bin/makex` default-target rule.
+pub fn parse_makefile_with_goal(path: &Path) -> (Vec<(String, Option<String>)>, Option<String>) {
+    let content = concat_makefile(path);
+    let targets = parse_targets(&content);
+    let goal = default_goal(&content, &targets);
+    (targets, goal)
+}
+
+/// Read `path` plus its literal includes into one concatenated stream.
+fn concat_makefile(path: &Path) -> String {
     let mut content = String::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     emit_file(path, &mut content, &mut visited);
-    parse_targets(&content)
+    content
+}
+
+/// The default goal for concatenated Makefile `content` and its already-parsed
+/// `targets`: last non-empty `.DEFAULT_GOAL` assignment wins; otherwise the
+/// first target in file order.
+fn default_goal(content: &str, targets: &[(String, Option<String>)]) -> Option<String> {
+    let mut explicit: Option<String> = None;
+    for line in content.lines() {
+        if let Some(name) = parse_default_goal_line(line) {
+            explicit = Some(name);
+        }
+    }
+    explicit.or_else(|| targets.first().map(|(n, _)| n.clone()))
+}
+
+/// If `line` assigns `.DEFAULT_GOAL`, return the assigned target name. Matches
+/// makex's awk `^\s*\.DEFAULT_GOAL\s*[:?+]?=`, then takes the first
+/// whitespace-delimited token of the value (trailing `# comment` stripped). An
+/// empty value yields `None` so it can't clobber an earlier assignment.
+fn parse_default_goal_line(line: &str) -> Option<String> {
+    let rest = line
+        .trim_start()
+        .strip_prefix(".DEFAULT_GOAL")?
+        .trim_start();
+    let rest = rest
+        .strip_prefix(|c| matches!(c, ':' | '?' | '+'))
+        .unwrap_or(rest);
+    let rest = rest.strip_prefix('=')?;
+    rest.split('#')
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string())
 }
 
 /// Concatenate `path` and its literal includes into `out`, in file order.
@@ -146,9 +196,10 @@ fn parse_targets(content: &str) -> Vec<(String, Option<String>)> {
             None => continue,
         };
 
-        // Variable assignment: `:=`, `::=` handled by awk as-is (only the char
-        // immediately after the first colon is checked for `=`).
-        if line[ci + 1..].starts_with('=') {
+        // Variable assignment: a run of `:` after the first colon followed by
+        // `=` (`:=`, `::=`, `:::=`) — a simply/recursively-expanded assign, not a
+        // target/prereq colon. (`a::b` double-colon *rules* keep their targets.)
+        if line[ci..].trim_start_matches(':').starts_with('=') {
             continue;
         }
 
@@ -406,6 +457,68 @@ build: ## second doc
 
         let out = parse_makefile(&mf);
         assert_eq!(out, vec![("build".into(), Some("first doc".into()))]);
+    }
+
+    #[test]
+    fn simple_expansion_assignment_is_not_a_target() {
+        // `FOO ::= bar` (GNU simply-expanded assign) must not leak a phantom
+        // `FOO` target; a real `build:` rule beside it still surfaces.
+        let dir = TempDir::new().unwrap();
+        let mf = write(
+            &dir,
+            "Makefile",
+            "\
+FOO ::= bar
+BAZ :::= qux
+
+build:
+\t@echo build
+",
+        );
+
+        let out = parse_makefile(&mf);
+        assert_eq!(names(&out), vec!["build"]);
+    }
+
+    #[test]
+    fn default_goal_explicit_last_assignment_wins() {
+        let dir = TempDir::new().unwrap();
+        let mf = write(
+            &dir,
+            "Makefile",
+            "\
+.DEFAULT_GOAL := build
+.DEFAULT_GOAL := test
+
+build:
+\t@echo build
+
+test:
+\t@echo test
+",
+        );
+
+        let (_, goal) = parse_makefile_with_goal(&mf);
+        assert_eq!(goal.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn default_goal_falls_back_to_first_target() {
+        let dir = TempDir::new().unwrap();
+        let mf = write(
+            &dir,
+            "Makefile",
+            "\
+build:
+\t@echo build
+
+test:
+\t@echo test
+",
+        );
+
+        let (_, goal) = parse_makefile_with_goal(&mf);
+        assert_eq!(goal.as_deref(), Some("build"));
     }
 
     #[test]

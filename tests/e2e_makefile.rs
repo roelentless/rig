@@ -283,6 +283,115 @@ fn hidden_dir_makefile_is_not_discovered() {
     );
 }
 
+/// The listing row for `name` (matched on the leading path column, marker and
+/// color already stripped from the front by `trim_start`). Panics if absent.
+fn row_for<'a>(clean: &'a str, name: &str) -> &'a str {
+    clean
+        .lines()
+        .find(|l| l.trim_start_matches(['→', ' ']).starts_with(name))
+        .unwrap_or_else(|| panic!("no listing row for '{}' in:\n{}", name, clean))
+}
+
+#[test]
+fn makefile_explicit_default_goal_marked() {
+    // `.DEFAULT_GOAL := test` marks `test` with `→`; the others get no arrow.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "Makefile",
+        "\
+.DEFAULT_GOAL := test
+
+build:
+\t@echo build
+
+test:
+\t@echo test
+
+deploy:
+\t@echo deploy
+",
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+
+    assert!(
+        row_for(&clean, "test").starts_with('→'),
+        "default goal 'test' not marked: {}",
+        clean
+    );
+    assert!(
+        !row_for(&clean, "build").starts_with('→'),
+        "non-default 'build' wrongly marked: {}",
+        clean
+    );
+    assert!(
+        !row_for(&clean, "deploy").starts_with('→'),
+        "non-default 'deploy' wrongly marked: {}",
+        clean
+    );
+}
+
+#[test]
+fn makefile_default_goal_falls_back_to_first_target() {
+    // No `.DEFAULT_GOAL` → the first target in file order is the default goal.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "Makefile",
+        "\
+build:
+\t@echo build
+
+test:
+\t@echo test
+",
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+
+    assert!(
+        row_for(&clean, "build").starts_with('→'),
+        "first target 'build' not marked: {}",
+        clean
+    );
+    assert!(
+        !row_for(&clean, "test").starts_with('→'),
+        "non-default 'test' wrongly marked: {}",
+        clean
+    );
+}
+
+#[test]
+fn rig_tasks_never_marked_default_goal() {
+    // The `→` marker is a make-only concept; rig-authored tasks never get it.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  app:
+    working_dir: .
+    tasks:
+      build:
+        command: echo build
+      test:
+        command: echo test
+"#,
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(
+        !clean.contains('→'),
+        "rig tasks must never be marked with →: {}",
+        clean
+    );
+}
+
 #[test]
 fn group_working_dir_inherited_by_task() {
     // Group-level working_dir remains the default working dir for group tasks
