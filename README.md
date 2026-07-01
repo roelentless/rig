@@ -171,6 +171,7 @@ TASKS:
   tasks [--group <name>]           List all tasks (→ marks a Makefile default goal)
   run/task <task...> [-- args...]  Run task(s): name, group.name, or group.service.name
     -p, --parallel                 Run tasks in parallel
+    -l, --list                     List tasks instead of running them
 
 OTHER:
   version                   Show version

@@ -3,7 +3,7 @@ use std::io::Write;
 
 use crossterm::{cursor, event, execute, terminal};
 
-use crate::config::{ResolvedService, ResolvedTask};
+use crate::config::{group_tree_to_value, Group, ResolvedService, ResolvedTask};
 use crate::output::{
     c, c_raw, log, log_error, log_system, log_verbose, print, strip_control_codes,
 };
@@ -734,7 +734,11 @@ pub fn cmd_tasks(
 /// Returns Err if no tasks found, Ok(()) otherwise.
 pub fn cmd_task_list(tasks: &[ResolvedTask], group_filter: Option<&str>) -> Result<(), String> {
     let filtered: Vec<_> = if let Some(group) = group_filter {
-        tasks.iter().filter(|t| t.group == group).cloned().collect()
+        tasks
+            .iter()
+            .filter(|t| crate::config::group_matches(&t.group, group))
+            .cloned()
+            .collect()
     } else {
         tasks.to_vec()
     };
@@ -780,43 +784,22 @@ pub fn cmd_task_list(tasks: &[ResolvedTask], group_filter: Option<&str>) -> Resu
 // CONFIG DISPLAY
 // ============================================================================
 
-pub fn cmd_config(
-    targets: &[ResolvedService],
-    _all_services: &[ResolvedService],
-    raw: bool,
-    json: bool,
-) {
-    if targets.is_empty() {
-        log_error("No matching services found");
-        return;
-    }
-
+pub fn cmd_config(root: &Group, targets: &[ResolvedService], raw: bool, json: bool) {
+    // Machine-readable output mirrors the actual loaded group tree (nested
+    // services + tasks, Makefile-sourced tasks included), independent of the
+    // service/group filter used for the human-readable listing.
     if raw || json {
-        // Build output structure
-        let mut output = serde_json::Map::new();
-        let mut groups_map = serde_json::Map::new();
-
-        for target in targets {
-            let group_entry = groups_map
-                .entry(target.group.clone())
-                .or_insert_with(|| serde_json::json!({"services": {}}));
-            if let Some(services) = group_entry.get_mut("services") {
-                if let Some(obj) = services.as_object_mut() {
-                    obj.insert(
-                        target.name.clone(),
-                        serde_json::to_value(&target.def).unwrap_or_default(),
-                    );
-                }
-            }
-        }
-
-        output.insert("groups".to_string(), serde_json::Value::Object(groups_map));
-
+        let output = group_tree_to_value(root);
         if json {
             print(&serde_json::to_string_pretty(&output).unwrap_or_default());
         } else {
             print(&serde_yaml::to_string(&output).unwrap_or_default());
         }
+        return;
+    }
+
+    if targets.is_empty() {
+        log_error("No matching services found");
         return;
     }
 
@@ -862,7 +845,27 @@ pub async fn cmd_init() -> Result<(), String> {
         }
     }
 
-    let template = "groups:\n  myapp:\n    services:\n      api:\n        command: npm start\n        working_dir: ./somewhere\n        environment:\n          PORT: \"3000\"\n";
+    let template = "\
+# rig config. You usually don't need this: a folder with a bare Makefile already
+# works zero-config — `rig tasks` lists its targets and `rig run <target>` runs
+# them. Add this file only for services (long-running processes) or richer tasks.
+#
+# This folder is the project root, so names below are bare (no group prefix).
+# Subfolders holding a Makefile or rig file auto-become dotted child groups.
+
+services:
+  api:
+    command: npm start
+    working_dir: .
+    environment:
+      PORT: \"3000\"
+
+tasks:
+  build:
+    command: npm run build
+    working_dir: .
+    description: Build the project
+";
 
     std::fs::write("rig.yaml", template)
         .map_err(|e| format!("Failed to create rig.yaml: {}", e))?;

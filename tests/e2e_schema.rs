@@ -61,6 +61,40 @@ groups:
 }
 
 #[test]
+fn init_template_loads_cleanly() {
+    // `rig init` must scaffold a wrapper-free rig.yaml (top-level services/tasks,
+    // no `groups:` wrapper) that round-trips: the emitted template parses and
+    // both `rig tasks` and `rig config` succeed against it.
+    let ctx = TestContext::new();
+
+    let init = ctx.rig(&["init"]);
+    assert_eq!(init.code, 0, "stderr: {}", init.stderr);
+
+    let written = ctx.read_file("rig.yaml");
+    assert!(
+        !written.contains("groups:"),
+        "template should be wrapper-free: {}",
+        written
+    );
+
+    let tasks = ctx.rig(&["tasks"]);
+    assert_eq!(tasks.code, 0, "stderr: {}", tasks.stderr);
+    assert!(
+        strip_ansi(&tasks.stdout).contains("build"),
+        "tasks: {}",
+        tasks.stdout
+    );
+
+    let config = ctx.rig(&["config"]);
+    assert_eq!(config.code, 0, "stderr: {}", config.stderr);
+    assert!(
+        strip_ansi(&config.stdout).contains("api"),
+        "config: {}",
+        config.stdout
+    );
+}
+
+#[test]
 fn schema_catches_unknown_requirement_keys() {
     let ctx = TestContext::new();
     ctx.write_file(

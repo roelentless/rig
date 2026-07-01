@@ -33,6 +33,7 @@ TASKS:
   tasks [--group <name>]           List all tasks (→ marks a Makefile default goal)
   run/task <task...> [-- args...]  Run task(s): name, group.name, or group.service.name
     -p, --parallel                 Run tasks in parallel
+    -l, --list                     List tasks instead of running them
 
 OTHER:
   version                   Show version
@@ -419,8 +420,7 @@ async fn main() {
                         load_and_resolve(&services, &group)
                             .unwrap_or_else(|e| handle_config_error(e))
                     };
-                    let all_services = get_all_services(&config);
-                    cmd_config(&targets, &all_services, raw, json);
+                    cmd_config(&config, &targets, raw, json);
                 }
                 _ => unreachable!(),
             }

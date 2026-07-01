@@ -459,3 +459,54 @@ fn nearest_root_wins_over_farther() {
         clean
     );
 }
+
+#[test]
+fn tasks_group_filter_scopes_whole_subtree() {
+    // `-g sub` scopes the entire sub.* subtree, not just the exact `sub` level:
+    // both sub/Makefile and sub/deep/Makefile targets appear; the root target
+    // does not. A leaf-group filter (`-g sub.deep`) still matches itself.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "rootonly:\n\t@echo hello-root\n");
+    ctx.write_file("sub/Makefile", "buildsub:\n\t@echo sub-build\n");
+    ctx.write_file("sub/deep/Makefile", "buildeep:\n\t@echo deep-build\n");
+
+    let result = ctx.rig(&["tasks", "-g", "sub"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(clean.contains("sub.buildsub"), "stdout: {}", clean);
+    assert!(clean.contains("sub.deep.buildeep"), "stdout: {}", clean);
+    assert!(!clean.contains("rootonly"), "root leaked: {}", clean);
+
+    // Exact leaf-group filter still matches itself and excludes the parent.
+    let deep = ctx.rig(&["tasks", "-g", "sub.deep"]);
+    assert_eq!(deep.code, 0, "stderr: {}", deep.stderr);
+    let dclean = strip_ansi(&deep.stdout);
+    assert!(dclean.contains("sub.deep.buildeep"), "stdout: {}", dclean);
+    assert!(!dclean.contains("sub.buildsub"), "stdout: {}", dclean);
+}
+
+#[test]
+fn config_json_emits_group_tree_with_task_sources() {
+    // config --json serializes the actual group tree: root-level units at the
+    // top (no "" wrapper), tasks included with a `source` field distinguishing
+    // rig-authored tasks from Makefile-sourced targets.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  deploy:\n    command: echo deploy\n    working_dir: .\n",
+    );
+    ctx.write_file("Makefile", "build:\n\t@echo build\n");
+
+    let result = ctx.rig(&["config", "--json"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    let cfg: serde_json::Value = serde_json::from_str(&clean).expect("valid JSON");
+
+    assert!(
+        cfg.get("").is_none(),
+        "unexpected empty-string root key: {}",
+        clean
+    );
+    assert_eq!(cfg["tasks"]["deploy"]["source"], serde_json::json!("rig"));
+    assert_eq!(cfg["tasks"]["build"]["source"], serde_json::json!("make"));
+}

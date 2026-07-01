@@ -1751,6 +1751,59 @@ fn collect_tasks<'a>(
     chain.pop();
 }
 
+/// True when a target's group `group` is `filter` itself or a descendant of it
+/// (`filter.` prefix). Lets a group filter scope the whole subtree, while a leaf
+/// group still matches itself exactly.
+pub fn group_matches(group: &str, filter: &str) -> bool {
+    group == filter || group.starts_with(&format!("{}.", filter))
+}
+
+/// Serialize the loaded group tree to a nested JSON value: root-level units sit
+/// at the top (no `""` wrapper), child groups nest under `groups`. Each task
+/// carries a `source` field (`rig`/`make`) so Makefile-sourced targets are
+/// distinguishable. Shared by `config --json` (serde_json) and `--raw`
+/// (serde_yaml), both of which serialize this value.
+pub fn group_tree_to_value(root: &Group) -> serde_json::Value {
+    fn level_body(g: &Group) -> serde_json::Value {
+        let mut services = serde_json::Map::new();
+        let mut svcs: Vec<&(String, ServiceDef)> = g.services.iter().collect();
+        svcs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, def) in svcs {
+            services.insert(name.clone(), serde_json::to_value(def).unwrap_or_default());
+        }
+
+        let mut tasks = serde_json::Map::new();
+        let mut ts: Vec<&(String, TaskDef)> = g.tasks.iter().collect();
+        ts.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, def) in ts {
+            let mut tv = serde_json::to_value(def).unwrap_or_default();
+            if let Some(obj) = tv.as_object_mut() {
+                let src = match def.source {
+                    TaskSource::Rig => "rig",
+                    TaskSource::Make => "make",
+                };
+                obj.insert("source".to_string(), serde_json::json!(src));
+            }
+            tasks.insert(name.clone(), tv);
+        }
+
+        let mut groups = serde_json::Map::new();
+        let mut children: Vec<&Group> = g.groups.iter().collect();
+        children.sort_by(|a, b| a.name.cmp(&b.name));
+        for child in children {
+            groups.insert(child.name.clone(), level_body(child));
+        }
+
+        serde_json::json!({
+            "services": serde_json::Value::Object(services),
+            "tasks": serde_json::Value::Object(tasks),
+            "groups": serde_json::Value::Object(groups),
+        })
+    }
+
+    level_body(root)
+}
+
 /// Set of every group's dotted path (excluding the root `""`).
 fn collect_group_paths(root: &Group) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -1872,11 +1925,15 @@ pub fn resolve_targets(
         for group_name in group_names {
             if !known.contains(group_name) {
                 return Err(ConfigError::generic(format!(
-                    "Unknown group: {}",
+                    "Unknown group '{}'",
                     group_name
                 )));
             }
-            services.extend(all.iter().filter(|s| &s.group == group_name).cloned());
+            services.extend(
+                all.iter()
+                    .filter(|s| group_matches(&s.group, group_name))
+                    .cloned(),
+            );
         }
         return Ok(services);
     }
