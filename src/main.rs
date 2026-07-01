@@ -6,7 +6,7 @@ use rig::commands::*;
 use rig::config::*;
 use rig::output::*;
 use rig::process::*;
-use rig::providers::provider;
+use rig::providers::{provider, TaskProvider};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -308,7 +308,7 @@ async fn main() {
                 .map(|path| p.resolve(path).unwrap_or_else(|e| handle_config_error(e)))
                 .collect();
 
-            let code = cmd_tasks(p.as_ref(), &resolved, &pass_args, parallel);
+            let code = run_tasks_supervised(p, resolved, pass_args, parallel).await;
             process::exit(code);
         }
 
@@ -424,6 +424,76 @@ async fn main() {
                 }
                 _ => unreachable!(),
             }
+        }
+    }
+}
+
+/// Run resolved tasks while forwarding an interrupt (SIGINT/SIGTERM) delivered to
+/// rig down into the spawned task subtree, so a signalled `rig run` never leaves
+/// the `sh -c`/`make`/recipe process tree behind as orphans. The task work runs on
+/// a blocking thread and is raced against the two signals; on a signal we kill
+/// every descendant of this process and exit with the conventional 128+signo code.
+///
+/// This wraps only the task-run path — the tmux/service commands are untouched.
+async fn run_tasks_supervised(
+    provider: Box<dyn TaskProvider + Send + Sync>,
+    resolved: Vec<ResolvedTask>,
+    pass_args: Vec<String>,
+    parallel: bool,
+) -> i32 {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let work = tokio::task::spawn_blocking(move || {
+        cmd_tasks(provider.as_ref(), &resolved, &pass_args, parallel)
+    });
+
+    // If we cannot install signal handlers, fall back to plain waiting.
+    let (mut sigint, mut sigterm) = match (
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::terminate()),
+    ) {
+        (Ok(i), Ok(t)) => (i, t),
+        _ => return work.await.unwrap_or(1),
+    };
+
+    tokio::select! {
+        r = work => r.unwrap_or(1),
+        _ = sigint.recv() => { kill_descendants(process::id()); 130 }
+        _ = sigterm.recv() => { kill_descendants(process::id()); 143 }
+    }
+}
+
+/// SIGKILL every descendant process of `root` (not `root` itself). Best-effort:
+/// takes one process snapshot, builds the parent→children map, then kills the
+/// whole subtree so no orphaned make/recipe process survives rig's exit.
+fn kill_descendants(root: u32) {
+    use std::collections::HashMap;
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (pid, proc_) in sys.processes() {
+        if let Some(parent) = proc_.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+
+    let mut stack = vec![Pid::from_u32(root)];
+    let mut victims = Vec::new();
+    while let Some(pid) = stack.pop() {
+        if let Some(kids) = children.get(&pid) {
+            for &kid in kids {
+                victims.push(kid);
+                stack.push(kid);
+            }
+        }
+    }
+
+    for pid in victims {
+        if let Some(proc_) = sys.process(pid) {
+            proc_.kill();
         }
     }
 }

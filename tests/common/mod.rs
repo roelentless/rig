@@ -99,6 +99,12 @@ fn rig_binary() -> PathBuf {
     path
 }
 
+/// Absolute path to the built `rig` binary. Exposed so tests that need to spawn
+/// rig directly (e.g. to hold a running child and signal it) can do so.
+pub fn rig_binary_path() -> PathBuf {
+    rig_binary()
+}
+
 pub struct TestContext {
     pub dir: TempDir,
 }
@@ -132,6 +138,22 @@ impl TestContext {
             .output()
             .expect("Failed to run rig binary");
 
+        RigResult {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        }
+    }
+
+    /// Run rig with extra environment variables set on the child process (on top
+    /// of the inherited ambient env). Used to prove ambient/group env forwarding.
+    pub fn rig_envs(&self, envs: &[(&str, &str)], args: &[&str]) -> RigResult {
+        let mut cmd = Command::new(rig_binary());
+        cmd.args(args).current_dir(self.dir.path());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let output = cmd.output().expect("Failed to run rig binary");
         RigResult {
             code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
