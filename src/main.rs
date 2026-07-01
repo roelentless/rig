@@ -318,7 +318,10 @@ async fn main() {
             match command {
                 Commands::Start { services, d, group } | Commands::Up { services, d, group } => {
                     let services = expand_csv(&services);
-                    let (config, config_dir, targets) = load_and_resolve(&services, &group)
+                    let (config, config_dir, mut targets) = load_and_resolve(&services, &group)
+                        .unwrap_or_else(|e| handle_config_error(e));
+                    // Load env files now (start time), fail-fast on required-missing.
+                    materialize_targets_env(&config, &mut targets)
                         .unwrap_or_else(|e| handle_config_error(e));
                     let all_services = get_all_services(&config);
                     let managers = create_managers(&targets, &config_dir);
@@ -342,7 +345,10 @@ async fn main() {
                 }
                 Commands::Restart { services, group } => {
                     let services = expand_csv(&services);
-                    let (_config, config_dir, targets) = load_and_resolve(&services, &group)
+                    let (config, config_dir, mut targets) = load_and_resolve(&services, &group)
+                        .unwrap_or_else(|e| handle_config_error(e));
+                    // Restart re-launches the service, so materialize env now too.
+                    materialize_targets_env(&config, &mut targets)
                         .unwrap_or_else(|e| handle_config_error(e));
                     let managers = create_managers(&targets, &config_dir);
                     if let Err(e) = cmd_restart(&managers, &targets).await {

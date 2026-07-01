@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-use crate::config::{get_all_tasks, resolve_task, ConfigError, Group, ResolvedTask};
+use crate::config::{
+    get_all_tasks, materialize_task_env, resolve_task, ConfigError, Group, ResolvedTask,
+};
 use crate::output::{log_error, log_verbose};
 
 use super::TaskProvider;
@@ -28,6 +30,12 @@ impl TaskProvider for RigProvider {
 
     fn resolve(&self, path: &str) -> Result<ResolvedTask, ConfigError> {
         resolve_task(path, &self.root)
+    }
+
+    fn materialize(&self, task: &mut ResolvedTask) -> Result<(), ConfigError> {
+        task.environment =
+            materialize_task_env(&self.root, &task.group, task.service.as_deref(), &task.name)?;
+        Ok(())
     }
 
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32 {
@@ -118,6 +126,7 @@ mod tests {
             working_dir: None,
             environment: None,
             env_file: None,
+            env_files: Vec::new(),
             description: None,
             source: TaskSource::Rig,
         }

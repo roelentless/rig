@@ -79,8 +79,13 @@ pub enum TaskSource {
 pub struct TaskDef {
     pub command: String,
     pub working_dir: Option<String>,
+    /// INLINE `environment:` only. Env files are recorded (not loaded) in
+    /// `env_files` and materialized at run time.
     pub environment: Option<HashMap<String, String>>,
     pub env_file: Option<EnvFileSpec>,
+    /// Resolved env-file entries (paths + `required`), NOT loaded at parse time.
+    #[serde(skip)]
+    pub env_files: Vec<ResolvedEnvFileEntry>,
     pub description: Option<String>,
     /// Rig-authored (default) vs discovered Makefile target. Not serialized.
     #[serde(skip)]
@@ -97,8 +102,13 @@ pub struct RequirementDef {
 pub struct ServiceDef {
     pub command: String,
     pub working_dir: String,
+    /// INLINE `environment:` only. Env files are recorded (not loaded) in
+    /// `env_files` and materialized at start time.
     pub environment: Option<HashMap<String, String>>,
     pub env_file: Option<EnvFileSpec>,
+    /// Resolved env-file entries (paths + `required`), NOT loaded at parse time.
+    #[serde(skip)]
+    pub env_files: Vec<ResolvedEnvFileEntry>,
     pub color: Option<String>,
     pub depends_on: Option<Vec<String>>,
     pub healthcheck: Option<HealthCheck>,
@@ -116,9 +126,11 @@ pub struct ServiceDef {
 pub struct Props {
     /// Nearest-explicit working dir for units that omit their own (absolute).
     pub working_dir: Option<String>,
-    /// Effective inline environment for this level (env_file already folded in,
-    /// inline `environment:` overriding it — resolved at parse time).
+    /// INLINE `environment:` for this level only. Env files are NOT loaded here;
+    /// they are recorded in `env_files` and materialized at run/start time.
     pub env: HashMap<String, String>,
+    /// Resolved env-file entries (paths + `required`) for this level, NOT loaded.
+    pub env_files: Vec<ResolvedEnvFileEntry>,
 }
 
 /// One level of the config hierarchy. Backed by a discovered directory (`dir`),
@@ -517,7 +529,7 @@ fn load_env_files(
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedEnvFileEntry {
+pub struct ResolvedEnvFileEntry {
     path: String,
     original_path: String,
     required: bool,
@@ -581,21 +593,35 @@ fn parse_inline_env(m: &serde_yaml::Mapping) -> Option<HashMap<String, String>> 
         })
 }
 
-/// Load a level's `env_file` + inline `environment` into a single map, inline
-/// overriding the file (fail fast on a required-missing file).
-fn load_level_env(
+/// Split a level's env declaration into (inline map, resolved env-file entries)
+/// WITHOUT touching the filesystem. Files are loaded later at run/start time by
+/// `fold_level_env`. This keeps listing/discovery env-file-free.
+fn split_level_env(
     m: &serde_yaml::Mapping,
     config_dir: &str,
+) -> (HashMap<String, String>, Vec<ResolvedEnvFileEntry>) {
+    let inline = parse_inline_env(m).unwrap_or_default();
+    let entries = m
+        .get("env_file")
+        .map(|ef| resolve_env_file_spec(ef, config_dir))
+        .unwrap_or_default();
+    (inline, entries)
+}
+
+/// Materialize one level's effective env: load its env files (base), then apply
+/// its inline env on top (inline overrides the file). Fail fast on a
+/// required-missing file. Called only on the run/start path, never on listing.
+fn fold_level_env(
+    entries: &[ResolvedEnvFileEntry],
+    inline: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, ConfigError> {
-    let mut env = HashMap::new();
-    if let Some(ef_val) = m.get("env_file") {
-        let entries = resolve_env_file_spec(ef_val, config_dir);
-        if !entries.is_empty() {
-            env = load_env_files(&entries)?;
-        }
-    }
-    if let Some(inline) = parse_inline_env(m) {
-        env.extend(inline);
+    let mut env = if entries.is_empty() {
+        HashMap::new()
+    } else {
+        load_env_files(entries)?
+    };
+    for (k, v) in inline {
+        env.insert(k.clone(), v.clone());
     }
     Ok(env)
 }
@@ -670,11 +696,11 @@ fn parse_service_task(
         .and_then(|v| v.as_str())
         .map(|wd| resolve_path(wd, config_dir));
 
-    let mut env = load_level_env(t, config_dir)?;
-    let environment = if env.is_empty() {
+    let (inline, env_files) = split_level_env(t, config_dir);
+    let environment = if inline.is_empty() {
         None
     } else {
-        Some(std::mem::take(&mut env))
+        Some(inline)
     };
 
     Ok(TaskDef {
@@ -682,6 +708,7 @@ fn parse_service_task(
         working_dir,
         environment,
         env_file: None,
+        env_files,
         description: t
             .get("description")
             .and_then(|v| v.as_str())
@@ -718,11 +745,11 @@ fn parse_service(
         })?;
     let working_dir = resolve_path(working_dir_raw, config_dir);
 
-    let mut env = load_level_env(s, config_dir)?;
-    let environment = if env.is_empty() {
+    let (inline, env_files) = split_level_env(s, config_dir);
+    let environment = if inline.is_empty() {
         None
     } else {
-        Some(std::mem::take(&mut env))
+        Some(inline)
     };
 
     let depends_on = s.get("depends_on").and_then(|v| {
@@ -806,6 +833,7 @@ fn parse_service(
         working_dir,
         environment,
         env_file: None,
+        env_files,
         color,
         depends_on,
         healthcheck,
@@ -845,11 +873,11 @@ fn parse_group_task(
         })?,
     };
 
-    let mut env = load_level_env(t, config_dir)?;
-    let environment = if env.is_empty() {
+    let (inline, env_files) = split_level_env(t, config_dir);
+    let environment = if inline.is_empty() {
         None
     } else {
-        Some(std::mem::take(&mut env))
+        Some(inline)
     };
 
     Ok(TaskDef {
@@ -857,6 +885,7 @@ fn parse_group_task(
         working_dir: Some(working_dir),
         environment,
         env_file: None,
+        env_files,
         description: t
             .get("description")
             .and_then(|v| v.as_str())
@@ -921,8 +950,12 @@ fn parse_level(
         .and_then(|v| v.as_str())
         .map(|wd| resolve_path(wd, config_dir));
 
-    let env = load_level_env(map, config_dir)?;
-    let props = Props { working_dir, env };
+    let (env, env_files) = split_level_env(map, config_dir);
+    let props = Props {
+        working_dir,
+        env,
+        env_files,
+    };
 
     let mut services = Vec::new();
     if let Some(svcs) = map.get("services").and_then(|v| v.as_mapping()) {
@@ -1096,6 +1129,7 @@ fn add_make_tasks(group: &mut Group, dir: &str) {
                 working_dir: Some(dir.to_string()),
                 environment: None,
                 env_file: None,
+                env_files: Vec::new(),
                 description,
                 source: TaskSource::Make,
             },
@@ -1220,6 +1254,7 @@ fn build_child_group(
         group.props.working_dir = parsed.props.working_dir;
     }
     group.props.env.extend(parsed.props.env);
+    group.props.env_files.extend(parsed.props.env_files);
     overlay_rig_tasks(&mut group.tasks, parsed.tasks);
     group.services.extend(parsed.services);
 
@@ -1240,6 +1275,7 @@ fn build_child_group(
             path_bufs.push(PathBuf::from(&pf));
             let pparsed = parse_file(&pf)?;
             group.props.env.extend(pparsed.props.env);
+            group.props.env_files.extend(pparsed.props.env_files);
             overlay_rig_tasks(&mut group.tasks, pparsed.tasks);
             group.services.extend(pparsed.services);
             for (cname, cbody) in pparsed.child_groups {
@@ -1381,6 +1417,116 @@ fn cascade_env(
         }
     }
     eff
+}
+
+/// Walk `group_path` (dotted, `""` = root) from `root`, returning the leaf group
+/// and the chain of its `Props` root→leaf. `None` if a segment doesn't resolve.
+fn walk_group_chain<'a>(root: &'a Group, group_path: &str) -> Option<(&'a Group, Vec<&'a Props>)> {
+    let mut chain: Vec<&Props> = vec![&root.props];
+    let mut cur = root;
+    if !group_path.is_empty() {
+        for seg in group_path.split('.') {
+            cur = cur.groups.iter().find(|g| g.name == seg)?;
+            chain.push(&cur.props);
+        }
+    }
+    Some((cur, chain))
+}
+
+/// Fold a unit's own materialized env under the group-ancestry chain, loading
+/// each level's env files. Ancestor wins (root last), preserving the exact
+/// parse-time precedence: unit.env_file < unit.inline < leaf.env_file <
+/// leaf.inline < … < root.env_file < root.inline. Fail fast on a
+/// required-missing file anywhere in the chain.
+fn cascade_materialize(
+    base: HashMap<String, String>,
+    chain: &[&Props],
+) -> Result<HashMap<String, String>, ConfigError> {
+    let mut eff = base;
+    for props in chain.iter().rev() {
+        let level = fold_level_env(&props.env_files, &props.env)?;
+        for (k, v) in level {
+            eff.insert(k, v);
+        }
+    }
+    Ok(eff)
+}
+
+/// Materialize a task's effective env at run time: load its env-file chain and
+/// fold with the ancestor-wins cascade. A required-missing file for the run
+/// target fails fast here. Returns `None` when the result is empty.
+pub fn materialize_task_env(
+    root: &Group,
+    group_path: &str,
+    service: Option<&str>,
+    task_name: &str,
+) -> Result<Option<HashMap<String, String>>, ConfigError> {
+    let (grp, chain) = walk_group_chain(root, group_path)
+        .ok_or_else(|| ConfigError::generic(format!("Unknown group '{}'", group_path)))?;
+    let empty = HashMap::new();
+
+    let base = match service {
+        None => {
+            let (_, tdef) = grp
+                .tasks
+                .iter()
+                .find(|(n, _)| n == task_name)
+                .ok_or_else(|| ConfigError::generic(format!("Unknown task '{}'", task_name)))?;
+            fold_level_env(&tdef.env_files, tdef.environment.as_ref().unwrap_or(&empty))?
+        }
+        Some(svc) => {
+            let (_, sdef) = grp
+                .services
+                .iter()
+                .find(|(n, _)| n == svc)
+                .ok_or_else(|| ConfigError::generic(format!("Unknown service '{}'", svc)))?;
+            let tdef = sdef
+                .tasks
+                .as_ref()
+                .and_then(|ts| ts.get(task_name))
+                .ok_or_else(|| ConfigError::generic(format!("Unknown task '{}'", task_name)))?;
+            let mut b =
+                fold_level_env(&sdef.env_files, sdef.environment.as_ref().unwrap_or(&empty))?;
+            let te = fold_level_env(&tdef.env_files, tdef.environment.as_ref().unwrap_or(&empty))?;
+            b.extend(te);
+            b
+        }
+    };
+
+    let eff = cascade_materialize(base, &chain)?;
+    Ok(if eff.is_empty() { None } else { Some(eff) })
+}
+
+/// Materialize a service's effective env at start time: same ancestor-wins
+/// cascade as tasks, loading the env-file chain. Fail fast on required-missing.
+pub fn materialize_service_env(
+    root: &Group,
+    group_path: &str,
+    service_name: &str,
+) -> Result<Option<HashMap<String, String>>, ConfigError> {
+    let (grp, chain) = walk_group_chain(root, group_path)
+        .ok_or_else(|| ConfigError::generic(format!("Unknown group '{}'", group_path)))?;
+    let (_, sdef) = grp
+        .services
+        .iter()
+        .find(|(n, _)| n == service_name)
+        .ok_or_else(|| ConfigError::generic(format!("Unknown service '{}'", service_name)))?;
+    let empty = HashMap::new();
+    let base = fold_level_env(&sdef.env_files, sdef.environment.as_ref().unwrap_or(&empty))?;
+    let eff = cascade_materialize(base, &chain)?;
+    Ok(if eff.is_empty() { None } else { Some(eff) })
+}
+
+/// Materialize env in place for each target service before start. Fail fast on a
+/// required-missing env file for any target being started.
+pub fn materialize_targets_env(
+    root: &Group,
+    targets: &mut [ResolvedService],
+) -> Result<(), ConfigError> {
+    for t in targets.iter_mut() {
+        t.def.environment = materialize_service_env(root, &t.group, &t.name)?;
+    }
+    Ok(())
 }
 
 /// All services as a flat, sorted vector with dotted-path groups and the
@@ -1525,38 +1671,46 @@ pub fn build_service_lookup(root: &Group) -> HashMap<String, ResolvedService> {
 
 /// Resolve a task path (`task`, `group.task`, or `group.service.task`).
 pub fn resolve_task(path: &str, root: &Group) -> Result<ResolvedTask, ConfigError> {
+    // Listing builds the tree WITHOUT loading env files; env for the chosen run
+    // target is materialized below (fail-fast on a required-missing file).
     let all = get_all_tasks(root);
 
-    if !path.contains('.') {
+    let mut found = if !path.contains('.') {
         let matches: Vec<_> = all.into_iter().filter(|t| t.name == path).collect();
-        return match matches.len() {
-            0 => Err(ConfigError::generic(format!("Unknown task '{}'", path))),
-            1 => Ok(matches.into_iter().next().unwrap()),
+        match matches.len() {
+            0 => return Err(ConfigError::generic(format!("Unknown task '{}'", path))),
+            1 => matches.into_iter().next().unwrap(),
             _ => {
                 let mut paths: Vec<_> = matches.iter().map(|t| t.path.clone()).collect();
                 paths.sort();
-                Err(ConfigError::generic(format!(
+                return Err(ConfigError::generic(format!(
                     "Ambiguous task '{}'. Matches: {}",
                     path,
                     paths.join(", ")
-                )))
+                )));
             }
-        };
-    }
+        }
+    } else {
+        match all.into_iter().find(|t| t.path == path) {
+            Some(t) => t,
+            None => {
+                // No exact match — distinguish an unknown top-level group from a
+                // missing task.
+                let first = path.split('.').next().unwrap_or("");
+                if !root.groups.iter().any(|c| c.name == first) {
+                    return Err(ConfigError::generic(format!("Unknown group '{}'", first)));
+                }
+                return Err(ConfigError::generic(format!(
+                    "Unknown task '{}'. Did you mean 'group.service.task'?",
+                    path
+                )));
+            }
+        }
+    };
 
-    if let Some(t) = all.into_iter().find(|t| t.path == path) {
-        return Ok(t);
-    }
-
-    // No exact match — distinguish an unknown top-level group from a missing task.
-    let first = path.split('.').next().unwrap_or("");
-    if !root.groups.iter().any(|c| c.name == first) {
-        return Err(ConfigError::generic(format!("Unknown group '{}'", first)));
-    }
-    Err(ConfigError::generic(format!(
-        "Unknown task '{}'. Did you mean 'group.service.task'?",
-        path
-    )))
+    found.environment =
+        materialize_task_env(root, &found.group, found.service.as_deref(), &found.name)?;
+    Ok(found)
 }
 
 /// Resolve CLI targets (group filters, then explicit service names, then all).

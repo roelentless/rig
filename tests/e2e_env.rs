@@ -97,6 +97,56 @@ groups:
 }
 
 #[test]
+fn list_succeeds_with_missing_required_env_in_discovered_file() {
+    // gangkhar repro (minimized): a downward-discovered rig file declares a
+    // REQUIRED env_file that is absent. Listing must NOT touch env files, so
+    // `rig tasks` succeeds and shows the task.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "worker/rig.yaml",
+        r#"
+tasks:
+  build:
+    command: echo built
+    working_dir: /tmp
+    env_file: ./missing.env
+"#,
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("worker.build"),
+        "stdout: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn run_fails_on_missing_required_env_in_discovered_file() {
+    // The same task, when RUN, must fail fast on the missing required env file.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "worker/rig.yaml",
+        r#"
+tasks:
+  build:
+    command: echo built
+    working_dir: /tmp
+    env_file: ./missing.env
+"#,
+    );
+
+    let result = ctx.rig(&["run", "worker.build"]);
+    assert_ne!(result.code, 0, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Failed to load env file"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
 fn env_file_required_true_errors_on_missing() {
     let ctx = TestContext::new();
     ctx.write_file(

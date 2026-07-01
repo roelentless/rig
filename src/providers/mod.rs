@@ -17,6 +17,11 @@ pub trait TaskProvider {
     fn discover(&self) -> Vec<ResolvedTask>;
     /// Resolve a task path to a handle, owning the error text.
     fn resolve(&self, path: &str) -> Result<ResolvedTask, ConfigError>;
+    /// Materialize the run-time env for an already-selected task (load its env
+    /// file chain, fail-fast on required-missing). Default: no env to load.
+    fn materialize(&self, _task: &mut ResolvedTask) -> Result<(), ConfigError> {
+        Ok(())
+    }
     /// Execute a resolved task synchronously, returning its exit code.
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32;
 }
@@ -74,15 +79,18 @@ pub fn resolve_across(
         })
         .collect();
 
-    match candidates.len() {
-        0 => ps[0].resolve(path).map(|t| (0, t)),
-        1 => Ok(candidates.remove(0)),
+    // Pick the winning candidate from the (env-free) discovery listing, then
+    // finalize it through the owning provider's `resolve()` so its env chain is
+    // materialized (fail-fast on a required-missing env file for the run target).
+    let (i, task) = match candidates.len() {
+        0 => return ps[0].resolve(path).map(|t| (0, t)),
+        1 => candidates.remove(0),
         _ if dotted => {
             // Same FQ path owned by multiple providers → rig (lowest index) wins.
-            Ok(candidates
+            candidates
                 .into_iter()
                 .min_by_key(|(i, _)| *i)
-                .expect("len > 1"))
+                .expect("len > 1")
         }
         _ => {
             // Short name owned by several tasks. A lone rig-authored task wins
@@ -96,16 +104,21 @@ pub fn resolve_across(
                 .map(|(pos, _)| pos)
                 .collect();
             if rig_indices.len() == 1 {
-                return Ok(candidates.remove(rig_indices[0]));
+                candidates.remove(rig_indices[0])
+            } else {
+                let mut fqs: Vec<String> = candidates.into_iter().map(|(_, t)| t.path).collect();
+                fqs.sort();
+                fqs.dedup();
+                return Err(ConfigError::generic(format!(
+                    "Ambiguous task '{}'. Matches: {}",
+                    path,
+                    fqs.join(", ")
+                )));
             }
-            let mut fqs: Vec<String> = candidates.into_iter().map(|(_, t)| t.path).collect();
-            fqs.sort();
-            fqs.dedup();
-            Err(ConfigError::generic(format!(
-                "Ambiguous task '{}'. Matches: {}",
-                path,
-                fqs.join(", ")
-            )))
         }
-    }
+    };
+
+    let mut task = task;
+    ps[i].materialize(&mut task)?;
+    Ok((i, task))
 }
