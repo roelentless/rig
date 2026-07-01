@@ -852,8 +852,8 @@ fn parse_group_task(
         .to_string();
 
     // Default working_dir: the task's own, else the group-level default, else the
-    // directory the config file lives in (the group's folder). A task never needs
-    // to spell out working_dir just to run where its config sits.
+    // directory of the config file that defines the task. A task never needs to
+    // spell out working_dir just to run where its config sits.
     let working_dir = match t.get("working_dir").and_then(|v| v.as_str()) {
         Some(wd) => resolve_path(wd, config_dir),
         None => default_wd.clone().unwrap_or_else(|| config_dir.to_string()),

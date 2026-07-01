@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-02
+
+- improvement: services resolve like tasks — `group.service` paths, ambiguity errors
+- bugfix: services in nested groups get valid tmux session names
+- improvement: cancelling `rig run` signals gracefully first, then force-kills
+- improvement: authored group named like a config-bearing folder is an error
+- improvement: task/service defined twice on one path is an error
+- improvement: dotted folder names are skipped with a warning, not half-supported
+- bugfix: `rig run` cancellation on Linux no longer orphans the make process tree
+- bugfix: empty arguments after `--` are preserved
+- bugfix: task listing no longer crashes on non-ASCII commands
+
 ## 2026-07-01
 
 - bugfix: cancelling `rig run` no longer orphans the `make`/recipe process tree

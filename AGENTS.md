@@ -18,7 +18,7 @@
 
 ### tmux
 
-- Session naming convention `{group}-{name}` enables discovery via prefix filtering
+- Session naming convention `{group}-{name}` enables discovery via prefix filtering; dotted group paths are flattened with `-` — tmux mangles `.` to `_` in session names and parses `.` in `-t` targets as window.pane, so a dotted session name can be created but never found again
 - `remain-on-exit on` preserves crash output for debugging
 - `kill-session` sends SIGHUP → process exits → port released
 - In raw mode, Ctrl+C is byte 3, not SIGINT - must handle explicitly
@@ -91,8 +91,9 @@
 - All rig files directly in one directory (`rig.yaml`, `rig.yml`, `*.rig.yaml`) compose into that group at the same level; a duplicate task/service/child-group name across siblings is a hard error
 - One tree: rig-authored units and discovered Makefile targets share the same `Group` nodes; a single tree-backed provider carries both
 - Path expansion is per-file: each rig file's `working_dir`/`env_file` resolve relative to its own directory before folding into the tree
-- Folder-auto child groups: a subdir holding a Makefile or a rig file becomes a group named by its folder
+- Folder-auto child groups: a subdir holding a Makefile or a rig file becomes a group named by its folder. Dotted folder names (`app.v2`) are not supported as groups — the subtree is skipped with an always-on warning
 - `dir:` adopts + renames a folder; `paths:` pulls explicit files; both mark their targets as adopted so folder-auto discovery doesn't add the same folder/file twice
+- Conflicts are hard errors, never silent: an authored group named like an unadopted config-bearing folder, or a rig task/service defined twice on one fully-qualified path (dir file + inline, or two `paths:` files). Rig-over-make displacement is the only sanctioned override
 - `environment`/`env_file` cascade ancestor-wins; env files load at run/start, never at list time
 - A `visited` set of normalized dirs guards against `dir:` cycles
 
@@ -122,16 +123,15 @@ groups:
 Key rules:
 - Names are folder-namespaced dotted paths: `relay.build`, `infra.cache`
 - A subfolder with a Makefile or rig file auto-becomes a child group; `dir:`/`paths:` reshape or rename
-- Service names must be unique across the whole tree
+- Service names may repeat across groups; a service's identity is its fully-qualified dotted path. Bare-name targeting resolves unique-or-error (like tasks); `depends_on` resolves same-group-first, then tree-wide unique-or-error
 - Groups are targeted with `-g/--group` using the dotted path: `rig start -g relay`
 - Default CLI targets are services: `rig start gateway`
 - Tasks run via `rig run <name>`, `rig run group.task`, or `rig run group.service.task`; a short name works when unambiguous
 - Rig-authored tasks win over Makefile targets on a name clash
-- One SessionManager instance per group (tmux sessions: `{group}-{service}`)
+- One SessionManager instance per group (tmux sessions: `{group}-{service}`, dotted group paths flattened with `-`)
 
 Discovery, per-file path resolution, sibling composition, and folder-auto grouping are
 detailed under Key Learnings → Group Tree above.
-- Duplicate service names across the tree = error; `dir:` cycles are guarded by a visited set
 
 ## Code Structure
 

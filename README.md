@@ -186,6 +186,7 @@ EXAMPLES:
   rig up -d                 Start all in background
   rig start api worker      Start specific services
   rig start api,worker      Same, comma-separated
+  rig start backend.api     Start by dotted path (bare names must be unique)
   rig start -g backend      Start all services in backend group
   rig down                  Stop all processes (graceful)
   rig stop -g backend       Stop all services in backend group
@@ -250,7 +251,9 @@ groups:
             command: deno test -A
 ```
 
-Service names must be unique across all groups.
+Service names may repeat across groups — a service's full name is its dotted path
+(`backend.api`). Bare names work whenever they are unambiguous; if two groups define
+the same service name, rig errors and asks for the qualified path.
 
 ### Tasks
 
@@ -284,6 +287,8 @@ groups:
 - **Group tasks** inherit `working_dir` from the group if not set explicitly
 - Tasks execute directly (not via tmux) - stdin/stdout pass through
 - Exit codes propagate - `rig run backend.build && rig run backend.deploy`
+- Cancelling (Ctrl+C / SIGTERM) forwards the signal to the task's process tree first —
+  `make` gets to delete partial targets — then force-kills anything that remains
 
 ### Makefile support
 
@@ -423,8 +428,12 @@ directory compose at the same level:
 
 - Any subfolder holding a `Makefile` or a rig file (`rig.yaml`, `rig.yml`, `*.rig.yaml`)
   auto-becomes a child group named by its folder.
-- Nested folders nest as dotted groups.
+- Nested folders nest as dotted groups. Folder names containing a dot (`app.v2`) can't
+  be groups — rig skips them with a warning; adopt one under a clean name via `dir:`.
 - The root file's top-level `tasks`/`services` attach to the root, so their names are bare.
+- Conflicts are errors, not silent picks: an authored group named like a config-bearing
+  folder (adopt it with `dir:` or rename), or the same task/service defined twice on one
+  path. The only override is a rig task replacing a same-named Makefile target.
 
 Reshape or extend the tree with authored `groups:`:
 
