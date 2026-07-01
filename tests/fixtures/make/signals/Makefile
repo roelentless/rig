@@ -5,3 +5,14 @@
 # via `pgrep -f`. Both vars are supplied per run: rig run sleeper -- MARKER=.. READY=..
 sleeper:
 	@sh -c 'touch $(READY); : $(MARKER); while true; do sleep 0.2; done'
+
+# Graceful-delivery recipe: traps TERM/INT, records the catchable signal by
+# touching $(GRACEFUL), and exits cleanly — proving rig's cancellation delivered
+# a real signal (not SIGKILL) before any hard sweep.
+graceful:
+	@sh -c 'trap "touch $(GRACEFUL); exit 0" TERM INT; touch $(READY); : $(MARKER); while true; do sleep 0.2; done'
+
+# Stuck recipe: ignores TERM/INT entirely, so only rig's SIGKILL backstop (after
+# the grace window) can reclaim it.
+stubborn:
+	@sh -c 'trap "" TERM INT; touch $(READY); : $(MARKER); while true; do sleep 0.2; done'

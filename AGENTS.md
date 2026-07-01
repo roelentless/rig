@@ -42,7 +42,7 @@
 
 ### Task cancellation
 
-- `rig run`/`task` supervises the task subprocess: on SIGINT/SIGTERM it SIGKILLs its whole descendant tree (sysinfo snapshot) before exiting 130/143, so a cancelled `make` run leaves no orphaned recipe — matching make's own behavior. Task-run path only; tmux-managed services stop via `kill-session`, so this must not touch the service path
+- `rig run`/`task` supervises the task subprocess: on SIGINT/SIGTERM it delegates cancellation to the task provider (`TaskProvider::cancel`) before exiting 130/143. `RigProvider` forwards the received signal to the whole descendant tree (sysinfo snapshot, graceful — lets `make` run its delete-partial-target cleanup), polls with re-snapshots until the tree drains (5s cap), then SIGKILLs stragglers — so a cancelled `make` run leaves no orphaned recipe. Task-run path only; tmux-managed services stop via `kill-session`, so this must not touch the service path
 
 ### Installer (`install.sh`)
 

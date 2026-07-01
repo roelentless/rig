@@ -1,4 +1,5 @@
 use std::process;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
@@ -431,20 +432,24 @@ async fn main() {
 /// Run resolved tasks while forwarding an interrupt (SIGINT/SIGTERM) delivered to
 /// rig down into the spawned task subtree, so a signalled `rig run` never leaves
 /// the `sh -c`/`make`/recipe process tree behind as orphans. The task work runs on
-/// a blocking thread and is raced against the two signals; on a signal we kill
-/// every descendant of this process and exit with the conventional 128+signo code.
+/// a blocking thread and is raced against the two signals; on a signal the
+/// provider cancels its task tree (graceful signal first, SIGKILL backstop —
+/// providers own their tasks' cancellation semantics) and rig exits with the
+/// conventional 128+signo code.
 ///
 /// This wraps only the task-run path — the tmux/service commands are untouched.
 async fn run_tasks_supervised(
-    provider: Box<dyn TaskProvider + Send + Sync>,
+    provider: Arc<dyn TaskProvider + Send + Sync>,
     resolved: Vec<ResolvedTask>,
     pass_args: Vec<String>,
     parallel: bool,
 ) -> i32 {
+    use sysinfo::Signal;
     use tokio::signal::unix::{signal, SignalKind};
 
+    let worker = provider.clone();
     let work = tokio::task::spawn_blocking(move || {
-        cmd_tasks(provider.as_ref(), &resolved, &pass_args, parallel)
+        cmd_tasks(worker.as_ref(), &resolved, &pass_args, parallel)
     });
 
     // If we cannot install signal handlers, fall back to plain waiting.
@@ -458,47 +463,7 @@ async fn run_tasks_supervised(
 
     tokio::select! {
         r = work => r.unwrap_or(1),
-        _ = sigint.recv() => { kill_descendants(process::id()); 130 }
-        _ = sigterm.recv() => { kill_descendants(process::id()); 143 }
-    }
-}
-
-/// SIGKILL every descendant process of `root` (not `root` itself). Best-effort:
-/// takes one process snapshot, builds the parent→children map, then kills the
-/// whole subtree so no orphaned make/recipe process survives rig's exit.
-fn kill_descendants(root: u32) {
-    use std::collections::HashMap;
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-
-    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
-    for (pid, proc_) in sys.processes() {
-        // On Linux, sysinfo lists threads (/proc/*/task) as processes parented to
-        // their own process; killing one SIGKILLs the whole thread group — i.e. us.
-        if proc_.thread_kind().is_some() {
-            continue;
-        }
-        if let Some(parent) = proc_.parent() {
-            children.entry(parent).or_default().push(*pid);
-        }
-    }
-
-    let mut stack = vec![Pid::from_u32(root)];
-    let mut victims = Vec::new();
-    while let Some(pid) = stack.pop() {
-        if let Some(kids) = children.get(&pid) {
-            for &kid in kids {
-                victims.push(kid);
-                stack.push(kid);
-            }
-        }
-    }
-
-    for pid in victims {
-        if let Some(proc_) = sys.process(pid) {
-            proc_.kill();
-        }
+        _ = sigint.recv() => { provider.cancel(Signal::Interrupt); 130 }
+        _ = sigterm.recv() => { provider.cancel(Signal::Term); 143 }
     }
 }

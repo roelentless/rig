@@ -1,6 +1,10 @@
 pub mod makefile;
 pub mod rig;
 
+use std::sync::Arc;
+
+use sysinfo::Signal;
+
 use crate::config::{try_load_config, ConfigError, ResolvedTask};
 
 pub use rig::RigProvider;
@@ -21,6 +25,11 @@ pub trait TaskProvider {
     fn resolve(&self, path: &str) -> Result<ResolvedTask, ConfigError>;
     /// Execute a resolved task synchronously, returning its exit code.
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32;
+    /// Cancel in-flight task work after rig received `signal`: forward the same
+    /// signal to the task process tree (graceful — lets `make` run its
+    /// delete-partial-target cleanup), wait for it to drain, then hard-kill
+    /// whatever remains.
+    fn cancel(&self, signal: Signal);
 }
 
 /// Build the task provider for a single command invocation.
@@ -31,12 +40,13 @@ pub trait TaskProvider {
 /// `RigProvider` carries both rig-authored and make-sourced tasks.
 pub fn provider(
     config_path: Option<&str>,
-) -> Result<Box<dyn TaskProvider + Send + Sync>, ConfigError> {
+) -> Result<Arc<dyn TaskProvider + Send + Sync>, ConfigError> {
     // A missing config (no rig.yaml and no Makefile anywhere) is `None`; a
     // malformed rig config still fails loudly. The tree already contains the
-    // discovered Makefile targets.
+    // discovered Makefile targets. Arc (not Box) so `rig run` can share the
+    // provider between the running-task closure and the signal path.
     match try_load_config(config_path)? {
-        Some((root, _dir)) => Ok(Box::new(RigProvider::new(root))),
+        Some((root, _dir)) => Ok(Arc::new(RigProvider::new(root))),
         None => Err(ConfigError::generic("No rig.yaml or Makefile found")),
     }
 }

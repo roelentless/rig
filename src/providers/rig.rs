@@ -1,10 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
 use crate::config::{get_all_tasks, resolve_task, ConfigError, Group, ResolvedTask};
 use crate::output::{log_error, log_verbose};
 
 use super::TaskProvider;
+
+/// How long cancellation waits for the signalled task tree to drain before the
+/// SIGKILL backstop.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// Re-snapshot interval while waiting for the tree to drain.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 /// The rig provider: tasks defined in the loaded rig group tree.
 pub struct RigProvider {
@@ -33,6 +42,78 @@ impl TaskProvider for RigProvider {
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32 {
         run_task(task, args)
     }
+
+    fn cancel(&self, signal: Signal) {
+        cancel_descendants(std::process::id(), signal);
+    }
+}
+
+/// Cancel every descendant process of `root` (not `root` itself), graceful
+/// first: forward `signal` (the one rig received) to the whole subtree —
+/// emulating what a terminal foreground group delivers, which is what `make`
+/// expects to run its delete-partial-target cleanup. Then poll, re-snapshotting
+/// so children forked mid-shutdown are seen (and signalled), until the tree
+/// drains or the grace window ends — after which whatever remains is SIGKILLed.
+fn cancel_descendants(root: u32, signal: Signal) {
+    let mut sys = System::new();
+    let mut signalled: HashSet<Pid> = HashSet::new();
+    let deadline = Instant::now() + CANCEL_GRACE;
+
+    loop {
+        let victims = descendants(&mut sys, root);
+        if victims.is_empty() {
+            return;
+        }
+        for &pid in &victims {
+            if signalled.insert(pid) {
+                if let Some(proc_) = sys.process(pid) {
+                    proc_.kill_with(signal);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(CANCEL_POLL);
+    }
+
+    // Backstop: SIGKILL processes that ignored (or never drained after) the
+    // graceful signal.
+    for pid in descendants(&mut sys, root) {
+        if let Some(proc_) = sys.process(pid) {
+            proc_.kill_with(Signal::Kill);
+        }
+    }
+}
+
+/// Descendant PIDs of `root` (not `root` itself) from a fresh process snapshot:
+/// refresh, build the parent→children map, walk the subtree.
+fn descendants(sys: &mut System, root: u32) -> Vec<Pid> {
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (pid, proc_) in sys.processes() {
+        // On Linux, sysinfo lists threads (/proc/*/task) as processes parented to
+        // their own process; killing one SIGKILLs the whole thread group — i.e. us.
+        if proc_.thread_kind().is_some() {
+            continue;
+        }
+        if let Some(parent) = proc_.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+
+    let mut stack = vec![Pid::from_u32(root)];
+    let mut found = Vec::new();
+    while let Some(pid) = stack.pop() {
+        if let Some(kids) = children.get(&pid) {
+            for &kid in kids {
+                found.push(kid);
+                stack.push(kid);
+            }
+        }
+    }
+    found
 }
 
 /// Quote an argument for safe interpolation into a `sh -c` command line.

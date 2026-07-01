@@ -257,11 +257,17 @@ fn kill_signal(pid: u32, signal: &str) {
         .status();
 }
 
-/// Spawn `rig run sleeper`, wait for the recipe child to be running, deliver
-/// `signal` to rig's PID only (not the process group), then report whether rig
-/// terminated promptly and how many recipe processes survived. Always cleans up.
-fn run_cancellation_case(signal: &str) -> (bool, usize) {
-    let ctx = TestContext::new();
+/// Spawn `rig run <target>` (with MARKER/READY make vars plus `extra_vars`),
+/// wait for the recipe child to be running, deliver `signal` to rig's PID only
+/// (not the process group), then report whether rig terminated promptly and how
+/// many recipe processes survived. Always cleans up. `ctx` is caller-owned so
+/// tests can inspect recipe-written files afterwards.
+fn run_cancellation_case_for(
+    ctx: &TestContext,
+    target: &str,
+    signal: &str,
+    extra_vars: &[String],
+) -> (bool, usize) {
     ctx.write_file("Makefile", &fixture("signals/Makefile"));
 
     let nonce = format!(
@@ -276,8 +282,11 @@ fn run_cancellation_case(signal: &str) -> (bool, usize) {
     let marker_arg = format!("MARKER={}", nonce);
     let ready_arg = format!("READY={}", ready.display());
 
+    let mut args = vec!["run", target, "--", &marker_arg, &ready_arg];
+    args.extend(extra_vars.iter().map(String::as_str));
+
     let mut child = Command::new(rig_binary_path())
-        .args(["run", "sleeper", "--", &marker_arg, &ready_arg])
+        .args(&args)
         .current_dir(ctx.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -322,7 +331,8 @@ fn run_cancellation_case(signal: &str) -> (bool, usize) {
 
 #[test]
 fn cancellation_sigint_terminates_rig_without_orphaning_child() {
-    let (terminated, survivors) = run_cancellation_case("INT");
+    let ctx = TestContext::new();
+    let (terminated, survivors) = run_cancellation_case_for(&ctx, "sleeper", "INT", &[]);
     assert!(terminated, "rig did not terminate promptly on SIGINT");
     assert_eq!(
         survivors, 0,
@@ -333,11 +343,51 @@ fn cancellation_sigint_terminates_rig_without_orphaning_child() {
 
 #[test]
 fn cancellation_sigterm_terminates_rig_without_orphaning_child() {
-    let (terminated, survivors) = run_cancellation_case("TERM");
+    let ctx = TestContext::new();
+    let (terminated, survivors) = run_cancellation_case_for(&ctx, "sleeper", "TERM", &[]);
     assert!(terminated, "rig did not terminate promptly on SIGTERM");
     assert_eq!(
         survivors, 0,
         "SIGTERM to rig left {} orphaned make/recipe process(es)",
+        survivors
+    );
+}
+
+#[test]
+fn cancellation_delivers_catchable_signal_before_kill() {
+    // The recipe traps TERM/INT and touches $(GRACEFUL) before exiting. The
+    // marker can only exist if cancellation forwarded a catchable signal to the
+    // recipe — a straight SIGKILL sweep would never let the trap run. This is
+    // the contract make's delete-partial-target cleanup depends on.
+    let ctx = TestContext::new();
+    let graceful = ctx.path().join("graceful_marker");
+    let graceful_arg = format!("GRACEFUL={}", graceful.display());
+
+    let (terminated, survivors) =
+        run_cancellation_case_for(&ctx, "graceful", "TERM", &[graceful_arg]);
+    assert!(terminated, "rig did not terminate promptly on SIGTERM");
+    assert!(
+        graceful.exists(),
+        "recipe trap never ran — cancellation did not deliver a catchable signal"
+    );
+    assert_eq!(
+        survivors, 0,
+        "graceful cancellation left {} recipe process(es)",
+        survivors
+    );
+}
+
+#[test]
+fn cancellation_kill_backstop_sweeps_stuck_child() {
+    // The recipe ignores TERM/INT outright, so it survives the graceful phase;
+    // only the SIGKILL backstop after the ~5s grace window reclaims it. The
+    // generous waits inside the helper (15s) cover the full window.
+    let ctx = TestContext::new();
+    let (terminated, survivors) = run_cancellation_case_for(&ctx, "stubborn", "TERM", &[]);
+    assert!(terminated, "rig did not terminate after the grace window");
+    assert_eq!(
+        survivors, 0,
+        "SIGKILL backstop left {} stuck recipe process(es)",
         survivors
     );
 }
