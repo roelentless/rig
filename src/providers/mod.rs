@@ -1,12 +1,8 @@
 pub mod makefile;
 pub mod rig;
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use crate::config::{try_load_config, ConfigError, ResolvedTask, TaskSource};
 
-use crate::config::{try_load_config, ConfigError, ResolvedTask};
-
-use makefile::MakeProvider;
 pub use rig::RigProvider;
 
 /// A request-time source of runnable tasks.
@@ -25,112 +21,38 @@ pub trait TaskProvider {
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32;
 }
 
-/// Standard makefile names make itself finds without an explicit `-f`, in
-/// priority order (used to pick one per directory).
-const STANDARD_MAKEFILE_NAMES: [&str; 3] = ["Makefile", "makefile", "GNUmakefile"];
-
 /// Build the providers for a single command invocation.
 ///
 /// Stateless: a pure function of the filesystem, constructed fresh per command
-/// and discarded after. tmux stays the only held state. RigProvider is placed
-/// first so rig tasks take precedence over make targets during resolution.
+/// and discarded after. tmux stays the only held state. Makefile discovery is
+/// now folded into the group tree during `try_load_config`, so a single
+/// tree-backed `RigProvider` carries both rig-authored and make-sourced tasks.
 pub fn providers(
     config_path: Option<&str>,
 ) -> Result<Vec<Box<dyn TaskProvider + Send + Sync>>, ConfigError> {
-    let mut ps: Vec<Box<dyn TaskProvider + Send + Sync>> = Vec::new();
-
-    // Optional now: a missing rig config is not an error, but a malformed one
-    // still fails loudly (try_load_config only maps not-found to None).
-    if let Some((root, _dir)) = try_load_config(config_path)? {
-        ps.push(Box::new(RigProvider::new(root)));
+    // A missing config (no rig.yaml and no Makefile anywhere) is `None`; a
+    // malformed rig config still fails loudly. The tree already contains the
+    // discovered Makefile targets.
+    match try_load_config(config_path)? {
+        Some((root, _dir)) => Ok(vec![Box::new(RigProvider::new(root))]),
+        None => Err(ConfigError::generic("No rig.yaml or Makefile found")),
     }
-
-    // Downward, gitignore-aware walk: one MakeProvider per discovered Makefile,
-    // namespaced by its folder path relative to CWD. Sorted by namespace for
-    // stable `rig tasks` output.
-    let cwd = std::env::current_dir().map_err(|e| ConfigError::generic(e.to_string()))?;
-    let mut discovered: Vec<(String, PathBuf)> = scan_for_makefiles(&cwd)?
-        .into_iter()
-        .map(|mf| {
-            let dir = mf.parent().unwrap_or(&cwd);
-            (namespace_from_relative_dir(&cwd, dir), mf.clone())
-        })
-        .collect();
-    discovered.sort_by(|a, b| a.0.cmp(&b.0));
-    for (ns, mf) in discovered {
-        ps.push(Box::new(MakeProvider::new(mf, ns)));
-    }
-
-    if ps.is_empty() {
-        return Err(ConfigError::generic("No rig.yaml or Makefile found"));
-    }
-
-    Ok(ps)
 }
 
-/// Discover every standard-named Makefile under `cwd`, gitignore-aware, one per
-/// directory (highest priority name wins). Reuses the shared `ignore`-crate
-/// walker so vendored/gitignored Makefiles are excluded exactly as rig files are.
-fn scan_for_makefiles(cwd: &Path) -> Result<Vec<PathBuf>, ConfigError> {
-    let files = crate::commands::walk_ignored_files(&cwd.to_string_lossy())
-        .map_err(ConfigError::generic)?;
-
-    // dir → best (lowest-index) standard name seen in that dir.
-    let mut best: BTreeMap<PathBuf, usize> = BTreeMap::new();
-    for path in files {
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
-            continue;
-        };
-        let Some(prio) = STANDARD_MAKEFILE_NAMES.iter().position(|n| *n == name) else {
-            continue;
-        };
-        let dir = path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| cwd.to_path_buf());
-        best.entry(dir)
-            .and_modify(|p| {
-                if prio < *p {
-                    *p = prio;
-                }
-            })
-            .or_insert(prio);
-    }
-
-    Ok(best
-        .into_iter()
-        .map(|(dir, prio)| dir.join(STANDARD_MAKEFILE_NAMES[prio]))
-        .collect())
-}
-
-/// Namespace for a Makefile's directory: its path relative to CWD with
-/// separators mapped to `.`. CWD itself → `""` (bare target names).
-fn namespace_from_relative_dir(cwd: &Path, dir: &Path) -> String {
-    let rel = dir.strip_prefix(cwd).unwrap_or(dir);
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-/// Resolve a task path across providers, disambiguating short names that now
-/// collide across folder-namespaced make providers.
+/// Resolve a task path, disambiguating short names that collide across the
+/// folder-namespaced tree. Make targets and rig tasks now share one tree-backed
+/// provider, so precedence keys off each task's `source`, not provider order.
 ///
 /// - Gather every candidate: a dotted `path` matches a task's full `path`; a
 ///   short name matches a task's `name`.
 /// - 0 candidates → fall back to `ps[0].resolve(path)`, preserving rig's error
 ///   text ("Unknown task", "Unknown group").
 /// - 1 candidate → that one.
-/// - many + dotted → same fully-qualified path across providers; lowest provider
-///   index wins (rig index 0 → force precedence over make; the R1 overlap case).
-/// - many + short → force precedence: a single rig-owned candidate wins over any
-///   number of make targets (the plan's "rig task beats make target"). Otherwise
-///   — a short name spread across make folders, or rig itself ambiguous — it is
-///   genuinely ambiguous; `Err` listing the distinct FQ paths.
-///
-/// rig is the provider named `"rig"` (always index 0 when a rig config exists);
-/// force precedence keys off that identity, not the raw index, since a make
-/// provider occupies index 0 when no rig config is present.
+/// - many + dotted → same fully-qualified path; lowest provider index wins.
+/// - many + short → force precedence: a single rig-authored candidate wins over
+///   any number of make targets (the plan's "rig task beats make target").
+///   Otherwise — a short name spread across folders, or rig itself ambiguous —
+///   it is genuinely ambiguous; `Err` listing the distinct FQ paths.
 ///
 /// perf: re-parses per call; fine while stateless.
 pub fn resolve_across(
@@ -163,12 +85,14 @@ pub fn resolve_across(
                 .expect("len > 1"))
         }
         _ => {
-            // Short name owned by several tasks. A lone rig task wins outright
-            // over make targets (force precedence); anything else is ambiguous.
+            // Short name owned by several tasks. A lone rig-authored task wins
+            // outright over make targets (force precedence); anything else is
+            // ambiguous. Source is carried on the task, not the provider, since
+            // rig and make now live in the same tree-backed provider.
             let rig_indices: Vec<usize> = candidates
                 .iter()
                 .enumerate()
-                .filter(|(_, (i, _))| ps[*i].name() == "rig")
+                .filter(|(_, (_, t))| t.source == TaskSource::Rig)
                 .map(|(pos, _)| pos)
                 .collect();
             if rig_indices.len() == 1 {
@@ -183,37 +107,5 @@ pub fn resolve_across(
                 fqs.join(", ")
             )))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn namespace_cwd_is_bare() {
-        let cwd = Path::new("/work/proj");
-        assert_eq!(
-            namespace_from_relative_dir(cwd, Path::new("/work/proj")),
-            ""
-        );
-    }
-
-    #[test]
-    fn namespace_one_level() {
-        let cwd = Path::new("/work/proj");
-        assert_eq!(
-            namespace_from_relative_dir(cwd, Path::new("/work/proj/backend")),
-            "backend"
-        );
-    }
-
-    #[test]
-    fn namespace_nested_dot_joined() {
-        let cwd = Path::new("/work/proj");
-        assert_eq!(
-            namespace_from_relative_dir(cwd, Path::new("/work/proj/apps/web")),
-            "apps.web"
-        );
     }
 }

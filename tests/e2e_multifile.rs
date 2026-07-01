@@ -313,6 +313,88 @@ groups:
 }
 
 #[test]
+fn dir_group_adopts_makefile_no_duplicate() {
+    // A `dir:` group whose directory holds a Makefile adopts its targets under
+    // the authored group name. The raw folder-namespaced entry (`svc.*`) is
+    // suppressed because the dir is adopted.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "svc/Makefile",
+        "build:\n\t@echo svc-make-build\n\nrelease:\n\t@echo svc-release\n",
+    );
+    ctx.write_file("rig.yaml", "groups:\n  api:\n    dir: ./svc\n");
+
+    let run = ctx.rig(&["run", "api.build"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.contains("svc-make-build"),
+        "stdout: {}",
+        run.stdout
+    );
+
+    let tasks = ctx.rig(&["tasks"]);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("api.build"), "tasks: {}", clean);
+    assert!(clean.contains("api.release"), "tasks: {}", clean);
+    // The adopted dir does not also surface a raw `svc.*` auto-entry.
+    assert!(!clean.contains("svc."), "duplicate svc entry: {}", clean);
+}
+
+#[test]
+fn rig_task_overrides_make_target_same_group() {
+    // Within one group (a `dir:` group over a Makefile-bearing dir), a rig-
+    // authored task of the same name as a make target wins — make never runs.
+    let ctx = TestContext::new();
+    ctx.write_file("svc/Makefile", "build:\n\t@echo make-build\n");
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  api:
+    dir: ./svc
+    tasks:
+      build:
+        command: echo rig-build
+        working_dir: .
+"#,
+    );
+
+    let run = ctx.rig(&["run", "api.build"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("rig-build"), "stdout: {}", run.stdout);
+    assert!(
+        !run.stdout.contains("make-build"),
+        "make target should not run: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn makefile_only_subdir_auto_child_group() {
+    // A subdir with ONLY a Makefile (no rig.yaml) auto-becomes a child group
+    // named by its folder, alongside a root rig.yaml.
+    let ctx = TestContext::new();
+    ctx.write_file("tools/Makefile", "lint:\n\t@echo tools-lint-output\n");
+    ctx.write_file(
+        "rig.yaml",
+        "tasks:\n  root-task:\n    command: echo root-out\n    working_dir: .\n",
+    );
+
+    let tasks = ctx.rig(&["tasks"]);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("tools.lint"), "tasks: {}", clean);
+    assert!(clean.contains("root-task"), "tasks: {}", clean);
+
+    let run = ctx.rig(&["run", "tools.lint"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.contains("tools-lint-output"),
+        "stdout: {}",
+        run.stdout
+    );
+}
+
+#[test]
 fn depends_on_invalid_across_groups_errors() {
     let ctx = TestContext::new();
     ctx.write_file(

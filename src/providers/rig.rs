@@ -109,7 +109,7 @@ fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Group, Props, TaskDef};
+    use crate::config::{Group, Props, TaskDef, TaskSource};
     use tempfile::TempDir;
 
     fn task_def(command: &str) -> TaskDef {
@@ -119,6 +119,7 @@ mod tests {
             environment: None,
             env_file: None,
             description: None,
+            source: TaskSource::Rig,
         }
     }
 
@@ -220,6 +221,7 @@ mod tests {
             working_dir: task.working_dir.clone().unwrap(),
             environment: None,
             description: None,
+            source: TaskSource::Rig,
         };
 
         let provider = RigProvider::new(sample_config());
@@ -242,6 +244,7 @@ mod tests {
             working_dir: dir.path().to_string_lossy().to_string(),
             environment: None,
             description: None,
+            source: TaskSource::Rig,
         };
 
         let provider = RigProvider::new(sample_config());

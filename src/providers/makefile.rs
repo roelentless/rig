@@ -1,120 +1,33 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::config::{ConfigError, ResolvedTask};
-use crate::output::log_verbose;
+use super::rig::shell_escape;
 
-use super::rig::{exec_sh, shell_escape};
-use super::TaskProvider;
+/// Standard Makefile names `make` finds without an explicit `-f`, in priority
+/// order (used to pick one per directory during tree construction).
+pub const STANDARD_MAKEFILE_NAMES: [&str; 3] = ["Makefile", "makefile", "GNUmakefile"];
 
-/// A request-time provider over a single Makefile, stamped with a folder
-/// namespace. Root (`namespace == ""`) yields bare target paths (`build`); a
-/// nested namespace yields dotted paths (`backend.build`).
-pub struct MakeProvider {
-    makefile: PathBuf,
-    namespace: String,
-}
-
-impl MakeProvider {
-    pub fn new(makefile: PathBuf, namespace: String) -> Self {
-        MakeProvider {
-            makefile,
-            namespace,
-        }
-    }
-
-    /// The makefile's filename (e.g. `Makefile`, `ci.mk`).
-    fn filename(&self) -> String {
-        self.makefile
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Makefile".to_string())
-    }
-
-    /// The directory make runs in — the makefile's parent, or `.` when the path
-    /// is a bare filename relative to CWD.
-    fn working_dir(&self) -> String {
-        self.makefile
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string())
-    }
-}
-
-/// Standard make filenames that `make` finds without an explicit `-f`.
-fn is_standard_makefile_name(name: &str) -> bool {
+/// Whether `name` is a standard Makefile name `make` resolves without `-f`.
+pub fn is_standard_makefile_name(name: &str) -> bool {
     matches!(name, "Makefile" | "makefile" | "GNUmakefile")
 }
 
-impl TaskProvider for MakeProvider {
-    fn name(&self) -> &str {
-        "make"
-    }
-
-    fn discover(&self) -> Vec<ResolvedTask> {
-        let working_dir = self.working_dir();
-        let filename = self.filename();
-        // Display-only command; `run` rebuilds the invocation itself.
-        let make_prefix = if is_standard_makefile_name(&filename) {
-            "make".to_string()
-        } else {
-            format!("make -f {}", filename)
-        };
-
-        parse_makefile(&self.makefile)
-            .into_iter()
-            .map(|(target, description)| {
-                let path = if self.namespace.is_empty() {
-                    target.clone()
-                } else {
-                    format!("{}.{}", self.namespace, target)
-                };
-                ResolvedTask {
-                    path,
-                    group: self.namespace.clone(),
-                    service: None,
-                    command: format!("{} {}", make_prefix, target),
-                    working_dir: working_dir.clone(),
-                    environment: None,
-                    description,
-                    name: target,
-                }
-            })
-            .collect()
-    }
-
-    fn resolve(&self, path: &str) -> Result<ResolvedTask, ConfigError> {
-        self.discover()
-            .into_iter()
-            .find(|t| t.path == path)
-            .ok_or_else(|| ConfigError::generic(format!("Unknown task '{}'", path)))
-    }
-
-    fn run(&self, task: &ResolvedTask, args: &[String]) -> i32 {
-        // Build the make invocation ourselves rather than exec the display
-        // `command`: `make <target> [args...]`, adding `-f <file>` for
-        // non-standard filenames so make can find it.
-        let filename = self.filename();
-        let mut command = if is_standard_makefile_name(&filename) {
-            format!("make {}", shell_escape(&task.name))
-        } else {
-            format!(
-                "make -f {} {}",
-                shell_escape(&filename),
-                shell_escape(&task.name)
-            )
-        };
-        for arg in args {
-            command.push(' ');
-            command.push_str(&shell_escape(arg));
-        }
-
-        log_verbose(&format!("task={}", task.path));
-        log_verbose(&format!("command={}", command));
-        log_verbose(&format!("working_dir={}", task.working_dir));
-
-        exec_sh(&command, &task.working_dir, None)
+/// The shell command that runs `target` from `makefile`. Standard names run as
+/// `make <target>`; a non-standard filename adds `-f <file>` so make finds it.
+/// Args (for a rig `run`) append to this exactly as for any rig task.
+pub fn make_command(makefile: &Path, target: &str) -> String {
+    let filename = makefile
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Makefile".to_string());
+    if is_standard_makefile_name(&filename) {
+        format!("make {}", shell_escape(target))
+    } else {
+        format!(
+            "make -f {} {}",
+            shell_escape(&filename),
+            shell_escape(target)
+        )
     }
 }
 
@@ -127,7 +40,7 @@ impl TaskProvider for MakeProvider {
 /// special (`.`-prefixed), variable-expanded (`$`), or malformed name is emitted
 /// in first-seen order. Inline `## doc` after a target rule becomes the
 /// description; an empty or absent doc becomes `None`. Dedup is first-wins.
-fn parse_makefile(path: &Path) -> Vec<(String, Option<String>)> {
+pub fn parse_makefile(path: &Path) -> Vec<(String, Option<String>)> {
     let mut content = String::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     emit_file(path, &mut content, &mut visited);
@@ -512,125 +425,5 @@ build:
 
         let out = parse_makefile(&mf);
         assert_eq!(names(&out), vec!["build"]);
-    }
-
-    #[test]
-    fn discover_root_namespace_yields_bare_paths() {
-        let dir = TempDir::new().unwrap();
-        let mf = write(
-            &dir,
-            "Makefile",
-            "\
-alpha: ## first
-\t@echo a
-
-beta:
-\t@echo b
-",
-        );
-
-        let provider = MakeProvider::new(mf, String::new());
-        let tasks = provider.discover();
-        assert_eq!(
-            tasks.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
-            vec!["alpha", "beta"]
-        );
-        // Bare path == name, empty group, display command, doc preserved.
-        assert_eq!(tasks[0].name, "alpha");
-        assert_eq!(tasks[0].group, "");
-        assert_eq!(tasks[0].command, "make alpha");
-        assert_eq!(tasks[0].description.as_deref(), Some("first"));
-        assert_eq!(tasks[1].description, None);
-    }
-
-    #[test]
-    fn discover_nested_namespace_prefixes_paths() {
-        // Proves the namespacing logic for M2 even though M1 only wires root.
-        let dir = TempDir::new().unwrap();
-        let mf = write(
-            &dir,
-            "Makefile",
-            "\
-build:
-\t@echo b
-
-test:
-\t@echo t
-",
-        );
-
-        let provider = MakeProvider::new(mf, "backend".to_string());
-        let tasks = provider.discover();
-        assert_eq!(
-            tasks.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
-            vec!["backend.build", "backend.test"]
-        );
-        assert_eq!(tasks[0].name, "build");
-        assert_eq!(tasks[0].group, "backend");
-    }
-
-    #[test]
-    fn resolve_ok_and_unknown() {
-        let dir = TempDir::new().unwrap();
-        let mf = write(
-            &dir,
-            "Makefile",
-            "\
-build:
-\t@echo b
-",
-        );
-
-        let provider = MakeProvider::new(mf, String::new());
-        let task = provider.resolve("build").expect("build resolves");
-        assert_eq!(task.path, "build");
-
-        let err = provider.resolve("nope").unwrap_err();
-        assert_eq!(err.to_string(), "Unknown task 'nope'");
-    }
-
-    #[test]
-    fn run_surfaces_make_exit_code() {
-        // A failing recipe makes `make` itself exit non-zero (GNU make reports a
-        // recipe error as exit code 2). `run` must surface make's real code, not
-        // swallow it.
-        let dir = TempDir::new().unwrap();
-        let mf = write(
-            &dir,
-            "Makefile",
-            "\
-boom:
-\t@exit 7
-",
-        );
-
-        let provider = MakeProvider::new(mf, String::new());
-        let task = provider.resolve("boom").unwrap();
-        assert_eq!(provider.run(&task, &[]), 2);
-    }
-
-    #[test]
-    fn run_executes_target_stdout() {
-        // Redirect the target's stdout to a file so we can assert the inherited
-        // stream carried make's output.
-        let dir = TempDir::new().unwrap();
-        let out_path = dir.path().join("out.txt");
-        let mf = write(
-            &dir,
-            "Makefile",
-            &format!(
-                "\
-write:
-\t@echo hello > {}
-",
-                out_path.to_string_lossy()
-            ),
-        );
-
-        let provider = MakeProvider::new(mf, String::new());
-        let task = provider.resolve("write").unwrap();
-        assert_eq!(provider.run(&task, &[]), 0);
-        let written = std::fs::read_to_string(&out_path).unwrap();
-        assert_eq!(written.trim(), "hello");
     }
 }

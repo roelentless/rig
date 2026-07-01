@@ -65,6 +65,16 @@ pub struct WatchDef {
     pub debounce: Option<String>,
 }
 
+/// Where a task originated. Rig-authored tasks win over Makefile targets on a
+/// short-name clash (force-over-auto precedence); the tag carries that identity
+/// through the unified group tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TaskSource {
+    #[default]
+    Rig,
+    Make,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDef {
     pub command: String,
@@ -72,6 +82,9 @@ pub struct TaskDef {
     pub environment: Option<HashMap<String, String>>,
     pub env_file: Option<EnvFileSpec>,
     pub description: Option<String>,
+    /// Rig-authored (default) vs discovered Makefile target. Not serialized.
+    #[serde(skip)]
+    pub source: TaskSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +171,7 @@ pub struct ResolvedTask {
     pub working_dir: String,
     pub environment: Option<HashMap<String, String>>,
     pub description: Option<String>,
+    pub source: TaskSource,
 }
 
 // ============================================================================
@@ -672,6 +686,7 @@ fn parse_service_task(
             .get("description")
             .and_then(|v| v.as_str())
             .map(String::from),
+        source: TaskSource::Rig,
     })
 }
 
@@ -846,6 +861,7 @@ fn parse_group_task(
             .get("description")
             .and_then(|v| v.as_str())
             .map(String::from),
+        source: TaskSource::Rig,
     })
 }
 
@@ -1018,6 +1034,75 @@ fn scan_rig_files(dir: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every standard-named Makefile under `dir` (gitignore-aware, hidden dirs
+/// skipped), used to derive folder-auto child-group segments. The group's own
+/// Makefile is picked separately via `own_makefile`.
+fn scan_makefiles(dir: &str) -> Vec<PathBuf> {
+    crate::commands::walk_ignored_files(dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .map(|n| {
+                    crate::providers::makefile::is_standard_makefile_name(&n.to_string_lossy())
+                })
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// The standard Makefile directly inside `dir` (priority: Makefile > makefile >
+/// GNUmakefile), or `None`.
+fn own_makefile(dir: &str) -> Option<PathBuf> {
+    for name in crate::providers::makefile::STANDARD_MAKEFILE_NAMES {
+        let p = Path::new(dir).join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// First path component of `file` relative to `dir` when `file` lives in a
+/// subdirectory (not directly in `dir`). A file sitting directly in `dir` is a
+/// sibling, not a child, and yields `None`.
+fn first_subdir_segment(file: &Path, dir: &str) -> Option<String> {
+    let f_norm = normalize_path(&file.to_string_lossy());
+    let rel = Path::new(&f_norm).strip_prefix(dir).ok()?;
+    let mut comps = rel.components();
+    let first = comps.next()?.as_os_str().to_string_lossy().to_string();
+    comps.next()?; // require a deeper component → `file` is under a subdir
+    Some(first)
+}
+
+/// Fold this directory's Makefile targets into `group` as make-sourced tasks.
+/// Rig-authored tasks already on the group win: a make target whose name is
+/// already taken is skipped (precedence falls out of gathering rig first).
+fn add_make_tasks(group: &mut Group, dir: &str) {
+    let mf = match own_makefile(dir) {
+        Some(p) => p,
+        None => return,
+    };
+    let taken: HashSet<String> = group.tasks.iter().map(|(n, _)| n.clone()).collect();
+    for (target, description) in crate::providers::makefile::parse_makefile(&mf) {
+        if taken.contains(&target) {
+            continue;
+        }
+        let command = crate::providers::makefile::make_command(&mf, &target);
+        group.tasks.push((
+            target,
+            TaskDef {
+                command,
+                working_dir: Some(dir.to_string()),
+                environment: None,
+                env_file: None,
+                description,
+                source: TaskSource::Make,
+            },
+        ));
+    }
+}
+
 /// Build a group backed by a directory: its own rig file (bare units + authored
 /// child groups + props) plus folder-auto child groups for subdirs that hold a
 /// rig file and aren't already adopted by an authored `dir:`/`paths:` group.
@@ -1055,28 +1140,26 @@ fn build_dir_group(
         }
     }
 
-    // Folder-auto child groups: immediate subdirs holding a non-adopted rig file.
-    let files = scan_rig_files(&dir_norm);
+    // This directory's own Makefile targets (rig gathered first → rig wins).
+    add_make_tasks(&mut group, &dir_norm);
+
+    // Folder-auto child groups: immediate subdirs holding a non-adopted rig file
+    // OR a Makefile. Namespacing is the relative folder path, identical for
+    // make-only and rig-only monorepos.
     let mut subdirs: BTreeSet<String> = BTreeSet::new();
-    for f in &files {
+    for f in &scan_rig_files(&dir_norm) {
         let f_norm = normalize_path(&f.to_string_lossy());
         if adopted_files.contains(&f_norm) {
             continue;
         }
-        let rel = match Path::new(&f_norm).strip_prefix(&dir_norm) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        let mut comps = rel.components();
-        let first = match comps.next() {
-            Some(c) => c.as_os_str().to_string_lossy().to_string(),
-            None => continue,
-        };
-        // File directly in `dir` (no subdir component) is a sibling, not a child.
-        if comps.next().is_none() {
-            continue;
+        if let Some(seg) = first_subdir_segment(f, &dir_norm) {
+            subdirs.insert(seg);
         }
-        subdirs.insert(first);
+    }
+    for f in &scan_makefiles(&dir_norm) {
+        if let Some(seg) = first_subdir_segment(f, &dir_norm) {
+            subdirs.insert(seg);
+        }
     }
 
     for seg in subdirs {
@@ -1091,6 +1174,17 @@ fn build_dir_group(
     }
 
     Ok(group)
+}
+
+/// Overlay rig-authored tasks onto a group's task list, rig winning on a name
+/// clash: any existing make-sourced task with a name being added is dropped
+/// first (a `dir:` group's inline/`paths:` rig task beats the dir's Makefile
+/// target). Rig-vs-rig collisions keep both, as before (resolution reports the
+/// ambiguity).
+fn overlay_rig_tasks(dst: &mut Vec<(String, TaskDef)>, add: Vec<(String, TaskDef)>) {
+    let adding: HashSet<String> = add.iter().map(|(n, _)| n.clone()).collect();
+    dst.retain(|(n, d)| !(d.source == TaskSource::Make && adding.contains(n)));
+    dst.extend(add);
 }
 
 /// Build an authored child group from its inline body. `dir:` recurses into a
@@ -1126,7 +1220,7 @@ fn build_child_group(
         group.props.working_dir = parsed.props.working_dir;
     }
     group.props.env.extend(parsed.props.env);
-    group.tasks.extend(parsed.tasks);
+    overlay_rig_tasks(&mut group.tasks, parsed.tasks);
     group.services.extend(parsed.services);
 
     // Explicit `paths:` files pulled into this group.
@@ -1146,7 +1240,7 @@ fn build_child_group(
             path_bufs.push(PathBuf::from(&pf));
             let pparsed = parse_file(&pf)?;
             group.props.env.extend(pparsed.props.env);
-            group.tasks.extend(pparsed.tasks);
+            overlay_rig_tasks(&mut group.tasks, pparsed.tasks);
             group.services.extend(pparsed.services);
             for (cname, cbody) in pparsed.child_groups {
                 let child = build_child_group(
@@ -1239,7 +1333,9 @@ pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, Strin
     };
     let base = normalize_path(&base);
 
-    if scan_rig_files(&base).is_empty() {
+    // Make-only is still valid: build the tree when either a rig file or a
+    // Makefile exists anywhere under the root.
+    if scan_rig_files(&base).is_empty() && scan_makefiles(&base).is_empty() {
         return Ok(None);
     }
 
@@ -1356,6 +1452,7 @@ fn collect_tasks<'a>(
             working_dir: tdef.working_dir.clone().unwrap_or_default(),
             environment: if eff.is_empty() { None } else { Some(eff) },
             description: tdef.description.clone(),
+            source: tdef.source,
         });
     }
 
@@ -1384,6 +1481,7 @@ fn collect_tasks<'a>(
                         .unwrap_or_else(|| sdef.working_dir.clone()),
                     environment: if eff.is_empty() { None } else { Some(eff) },
                     description: tdef.description.clone(),
+                    source: TaskSource::Rig,
                 });
             }
         }
