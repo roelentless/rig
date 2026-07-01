@@ -668,14 +668,15 @@ pub async fn cmd_logs(
 /// first non-zero exit code). `run` is synchronous, so the parallel path uses
 /// scoped threads.
 pub fn cmd_tasks(
-    provider: &(dyn TaskProvider + Send + Sync),
-    tasks: &[ResolvedTask],
+    providers: &[Box<dyn TaskProvider + Send + Sync>],
+    tasks: &[(usize, ResolvedTask)],
     args: &[String],
     parallel: bool,
 ) -> i32 {
     // Single task
     if tasks.len() == 1 {
-        return provider.run(&tasks[0], args);
+        let (idx, task) = &tasks[0];
+        return providers[*idx].run(task, args);
     }
 
     // Multiple tasks with args is an error
@@ -686,8 +687,8 @@ pub fn cmd_tasks(
 
     if !parallel {
         // Sequential (fail-fast)
-        for task in tasks {
-            let code = provider.run(task, &[]);
+        for (idx, task) in tasks {
+            let code = providers[*idx].run(task, &[]);
             if code != 0 {
                 log_error(&format!(
                     "Task '{}' failed with exit code {}",
@@ -698,13 +699,13 @@ pub fn cmd_tasks(
         }
         0
     } else {
-        // Parallel: scoped threads borrow the shared provider and tasks.
+        // Parallel: scoped threads borrow the shared providers and tasks.
         let results = std::thread::scope(|scope| {
             let handles: Vec<_> = tasks
                 .iter()
-                .map(|task| {
+                .map(|(idx, task)| {
                     scope.spawn(move || {
-                        let code = provider.run(task, &[]);
+                        let code = providers[*idx].run(task, &[]);
                         if code != 0 {
                             log_error(&format!(
                                 "Task '{}' failed with exit code {}",

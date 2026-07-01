@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::output::log_verbose;
-use crate::providers::makefile::MakeProvider;
 
 // ============================================================================
 // ERRORS
@@ -154,9 +153,7 @@ fn root_keys() -> HashSet<&'static str> {
     ["imports", "groups"].into_iter().collect()
 }
 fn group_keys() -> HashSet<&'static str> {
-    ["services", "tasks", "working_dir", "makefiles"]
-        .into_iter()
-        .collect()
+    ["services", "tasks", "working_dir"].into_iter().collect()
 }
 fn service_keys() -> HashSet<&'static str> {
     [
@@ -673,7 +670,7 @@ fn load_config_recursive(
                 ))
             })?;
 
-            // Parse group-level working_dir (used as default for tasks and Makefile discovery)
+            // Parse group-level working_dir (default working dir for group-level tasks)
             let group_working_dir = if let Some(wd_val) = group_map.get("working_dir") {
                 let wd_str = wd_val.as_str().ok_or_else(|| {
                     ConfigError::generic(format!(
@@ -688,66 +685,16 @@ fn load_config_recursive(
 
             let has_services = group_map.get("services").is_some();
             let has_tasks = group_map.get("tasks").is_some();
-            let has_makefiles = group_map.get("makefiles").is_some();
 
-            if !has_services && !has_tasks && !has_makefiles && group_working_dir.is_none() {
+            if !has_services && !has_tasks {
                 return Err(ConfigError::generic(format!(
-                    "Group '{}' in {} must have 'services', 'tasks', 'makefiles', or 'working_dir'",
+                    "Group '{}' in {} must have 'services' or 'tasks'",
                     group_name, config_path
                 )));
             }
 
             let mut services_map: HashMap<String, ServiceDef> = HashMap::new();
             let mut tasks_map: HashMap<String, TaskDef> = HashMap::new();
-
-            // Load Makefile tasks. Rigfile tasks (parsed below) override on name conflict.
-            {
-                let mut makefile_paths: Vec<PathBuf> = Vec::new();
-
-                // Auto-discover: Makefile in group's working_dir
-                if let Some(ref gwd) = group_working_dir {
-                    let auto = PathBuf::from(gwd).join("Makefile");
-                    if auto.exists() {
-                        makefile_paths.push(auto);
-                    }
-                }
-
-                // Explicit makefiles list
-                if let Some(mf_val) = group_map.get("makefiles") {
-                    if let Some(seq) = mf_val.as_sequence() {
-                        for item in seq {
-                            if let Some(s) = item.as_str() {
-                                let resolved = PathBuf::from(resolve_path(s, config_dir));
-                                if !makefile_paths.contains(&resolved) {
-                                    makefile_paths.push(resolved);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for makefile_path in &makefile_paths {
-                    if !makefile_path.exists() {
-                        return Err(ConfigError::generic(format!(
-                            "Makefile not found: {} (group '{}', {})",
-                            makefile_path.display(),
-                            group_name,
-                            config_path
-                        )));
-                    }
-                }
-
-                let provider = MakeProvider::new(makefile_paths.clone());
-                for dt in provider.scan() {
-                    tasks_map.entry(dt.name.clone()).or_insert(TaskDef {
-                        command: dt.command,
-                        working_dir: Some(dt.working_dir),
-                        environment: None,
-                        env_file: None,
-                        description: dt.description,
-                    });
-                }
-            }
 
             // Parse services
             if let Some(services_val) = group_map.get("services") {
@@ -1222,20 +1169,34 @@ fn load_config_tree(root_path: &str) -> Result<(Config, String), ConfigError> {
     ))
 }
 
-/// Load config from a path. If no path, searches upward from CWD.
-pub fn load_config(config_path: Option<&str>) -> Result<(Config, String), ConfigError> {
+/// Load config from a path. If no path, searches upward from CWD. Returns
+/// `Ok(None)` when no config is found (auto-search only); a real parse error
+/// while loading a located config still fails loudly.
+pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Config, String)>, ConfigError> {
     let path = match config_path {
         Some(p) => PathBuf::from(p),
         None => {
             let cwd = std::env::current_dir().map_err(|e| {
                 ConfigError::generic(format!("Failed to get current directory: {}", e))
             })?;
-            find_nearest_config(&cwd)?
+            match find_nearest_config(&cwd) {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            }
         }
     };
     let path_str = path.to_string_lossy().to_string();
     log_verbose(&format!("config={}", path_str));
-    load_config_tree(&path_str)
+    load_config_tree(&path_str).map(Some)
+}
+
+/// Load config from a path. If no path, searches upward from CWD.
+pub fn load_config(config_path: Option<&str>) -> Result<(Config, String), ConfigError> {
+    try_load_config(config_path)?.ok_or_else(|| {
+        ConfigError::generic(
+            "No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml",
+        )
+    })
 }
 
 // ============================================================================

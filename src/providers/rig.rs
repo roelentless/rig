@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
 use crate::config::{get_all_tasks, resolve_task, Config, ConfigError, ResolvedTask};
@@ -5,8 +6,7 @@ use crate::output::{log_error, log_verbose};
 
 use super::TaskProvider;
 
-/// The rig provider: tasks defined in the loaded rig `Config` (which already
-/// folds in any Makefile targets at load time).
+/// The rig provider: tasks defined in the loaded rig `Config`.
 pub struct RigProvider {
     config: Config,
 }
@@ -35,7 +35,9 @@ impl TaskProvider for RigProvider {
     }
 }
 
-fn shell_escape(arg: &str) -> String {
+/// Quote an argument for safe interpolation into a `sh -c` command line.
+/// Shared with `MakeProvider`.
+pub(crate) fn shell_escape(arg: &str) -> String {
     if arg
         .chars()
         .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | '@' | ':'))
@@ -46,8 +48,39 @@ fn shell_escape(arg: &str) -> String {
     }
 }
 
-/// Execute a resolved task synchronously via `sh -c`, inheriting stdio and
-/// merging the task environment. Returns the process exit code.
+/// Execute a command string synchronously via `sh -c` in `working_dir`,
+/// inheriting stdio and merging `environment`. Returns the process exit code.
+/// Shared exec path for all providers.
+pub(crate) fn exec_sh(
+    command: &str,
+    working_dir: &str,
+    environment: Option<&HashMap<String, String>>,
+) -> i32 {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", command]);
+    cmd.current_dir(working_dir);
+    cmd.stdin(Stdio::inherit());
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    if let Some(env) = environment {
+        cmd.envs(env);
+    }
+
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            log_error(&format!(
+                "Failed to run command '{}' in '{}': {}",
+                command, working_dir, e
+            ));
+            1
+        }
+    }
+}
+
+/// Execute a resolved rig task synchronously, appending escaped args to the
+/// task's command. Returns the process exit code.
 fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
     let full_command = if args.is_empty() {
         resolved.command.clone()
@@ -66,28 +99,11 @@ fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
     log_verbose(&format!("command={}", full_command));
     log_verbose(&format!("working_dir={}", resolved.working_dir));
 
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", &full_command]);
-    cmd.current_dir(&resolved.working_dir);
-    cmd.stdin(Stdio::inherit());
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
-
-    // Merge environment
-    if let Some(env) = &resolved.environment {
-        cmd.envs(env);
-    }
-
-    match cmd.status() {
-        Ok(status) => status.code().unwrap_or(1),
-        Err(e) => {
-            log_error(&format!(
-                "Failed to run task '{}' (command='{}', dir='{}'): {}",
-                resolved.path, resolved.command, resolved.working_dir, e
-            ));
-            1
-        }
-    }
+    exec_sh(
+        &full_command,
+        &resolved.working_dir,
+        resolved.environment.as_ref(),
+    )
 }
 
 #[cfg(test)]

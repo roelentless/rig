@@ -17,42 +17,30 @@ clean: ## remove artifacts
 ";
 
 #[test]
-fn makefile_tasks_auto_discovered() {
+fn zero_config_makefile_tasks_listed() {
+    // Headline capability: a directory with ONLY a Makefile (no rig.yaml) lists
+    // its targets under bare names.
     let ctx = TestContext::new();
     ctx.write_file("Makefile", BASIC_MAKEFILE);
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-groups:
-  proj:
-    working_dir: .
-"#,
-    );
 
     let result = ctx.rig(&["tasks"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     let clean = strip_ansi(&result.stdout);
-    assert!(clean.contains("proj.build"), "stdout: {}", clean);
-    assert!(clean.contains("proj.test"), "stdout: {}", clean);
-    assert!(clean.contains("proj.clean"), "stdout: {}", clean);
+    // Bare names, not group.target.
+    assert!(clean.contains("build"), "stdout: {}", clean);
+    assert!(clean.contains("test"), "stdout: {}", clean);
+    assert!(clean.contains("clean"), "stdout: {}", clean);
     assert!(clean.contains("compile the project"), "stdout: {}", clean);
     assert!(clean.contains("run tests"), "stdout: {}", clean);
 }
 
 #[test]
-fn makefile_task_runs() {
+fn zero_config_makefile_task_runs() {
+    // Headline capability: `rig run <target>` executes with only a Makefile.
     let ctx = TestContext::new();
     ctx.write_file("Makefile", BASIC_MAKEFILE);
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-groups:
-  proj:
-    working_dir: .
-"#,
-    );
 
-    let result = ctx.rig(&["run", "proj.build"]);
+    let result = ctx.rig(&["run", "build"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert!(
         result.stdout.contains("build-output"),
@@ -74,16 +62,8 @@ greet:
 \t@echo hello $(NAME)
 ",
     );
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-groups:
-  proj:
-    working_dir: .
-"#,
-    );
 
-    let result = ctx.rig(&["run", "proj.greet", "--", "NAME=world"]);
+    let result = ctx.rig(&["run", "greet", "--", "NAME=world"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert!(
         result.stdout.contains("hello world"),
@@ -94,6 +74,8 @@ groups:
 
 #[test]
 fn rigfile_task_overrides_makefile() {
+    // A rig task and a make target share the short name `build`. Resolution tries
+    // rig first (index 0), so the unambiguous rig task wins — make never runs.
     let ctx = TestContext::new();
     ctx.write_file(
         "Makefile",
@@ -110,15 +92,15 @@ build:
         r#"
 groups:
   proj:
-    working_dir: .
     tasks:
       build:
         command: echo rigfile-build
+        working_dir: .
         description: overridden by rigfile
 "#,
     );
 
-    let result = ctx.rig(&["run", "proj.build"]);
+    let result = ctx.rig(&["run", "build"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert!(
         result.stdout.contains("rigfile-build"),
@@ -133,45 +115,72 @@ groups:
 }
 
 #[test]
-fn makefile_explicit_path() {
+fn makefile_without_phony_exposes_all_real_targets() {
+    // makex semantics: .PHONY does not gate discovery. Every real target
+    // surfaces (documented or not), so both `publish` and the undocumented
+    // `_internal` appear under bare names.
     let ctx = TestContext::new();
     ctx.write_file(
-        "tools/build.mk",
+        "Makefile",
         "\
-.PHONY: package
+publish: ## publish to registry
+\t@echo published
 
-## package: create distributable package
-package:
-\t@echo packaged
+_internal:
+\t@echo internal
+",
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(clean.contains("publish"), "stdout: {}", clean);
+    assert!(
+        clean.contains("_internal"),
+        "undocumented target should now appear: {}",
+        clean
+    );
+}
+
+#[test]
+fn makefile_and_rig_tasks_coexist() {
+    // With both a Makefile and a rig.yaml present, `rig tasks` shows the union:
+    // bare make targets alongside namespaced rig tasks.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "Makefile",
+        "\
+.PHONY: build
+
+## build: compile
+build:
+\t@echo built
 ",
     );
     ctx.write_file(
         "rig.yaml",
         r#"
 groups:
-  proj:
-    working_dir: .
-    makefiles:
-      - ./tools/build.mk
+  app:
+    tasks:
+      lint:
+        command: echo linted
+        working_dir: .
 "#,
     );
 
     let result = ctx.rig(&["tasks"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     let clean = strip_ansi(&result.stdout);
-    assert!(clean.contains("proj.package"), "stdout: {}", clean);
-
-    let result = ctx.rig(&["run", "proj.package"]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    assert!(
-        result.stdout.contains("packaged"),
-        "stdout: {}",
-        result.stdout
-    );
+    // Bare make target and namespaced rig task both appear.
+    assert!(clean.contains("build"), "stdout: {}", clean);
+    assert!(clean.contains("app.lint"), "stdout: {}", clean);
 }
 
 #[test]
 fn group_working_dir_inherited_by_task() {
+    // Group-level working_dir remains the default working dir for group tasks
+    // that omit their own (unchanged by the make-provider work).
     let ctx = TestContext::new();
     ctx.write_file(
         "rig.yaml",
@@ -192,77 +201,4 @@ groups:
         "stdout: {}",
         result.stdout
     );
-}
-
-#[test]
-fn makefile_without_phony_exposes_all_real_targets() {
-    // makex semantics: .PHONY does not gate discovery. Every real target
-    // surfaces (documented or not), so both `publish` and the undocumented
-    // `_internal` appear — the old `_`-prefix hiding convention is gone.
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "Makefile",
-        "\
-publish: ## publish to registry
-\t@echo published
-
-_internal:
-\t@echo internal
-",
-    );
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-groups:
-  proj:
-    working_dir: .
-"#,
-    );
-
-    let result = ctx.rig(&["tasks"]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    let clean = strip_ansi(&result.stdout);
-    assert!(clean.contains("proj.publish"), "stdout: {}", clean);
-    assert!(
-        clean.contains("_internal"),
-        "undocumented target should now appear: {}",
-        clean
-    );
-}
-
-#[test]
-fn makefile_and_services_in_same_group() {
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "Makefile",
-        "\
-.PHONY: build
-
-## build: compile
-build:
-\t@echo built
-",
-    );
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-groups:
-  app:
-    working_dir: .
-    services:
-      server:
-        command: sh -c "echo started; sleep 30"
-        working_dir: .
-    tasks:
-      lint:
-        command: echo linted
-"#,
-    );
-
-    let result = ctx.rig(&["tasks"]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    let clean = strip_ansi(&result.stdout);
-    // Both Makefile task and rigfile task appear under the same group
-    assert!(clean.contains("app.build"), "stdout: {}", clean);
-    assert!(clean.contains("app.lint"), "stdout: {}", clean);
 }
