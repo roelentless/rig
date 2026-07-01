@@ -6,7 +6,7 @@ use rig::commands::*;
 use rig::config::*;
 use rig::output::*;
 use rig::process::*;
-use rig::providers::{providers, resolve_across};
+use rig::providers::provider;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -266,8 +266,8 @@ async fn main() {
 
         // Task listing
         Commands::Tasks { group } => {
-            let ps = providers(None).unwrap_or_else(|e| handle_config_error(e));
-            let all: Vec<ResolvedTask> = ps.iter().flat_map(|p| p.discover()).collect();
+            let p = provider(None).unwrap_or_else(|e| handle_config_error(e));
+            let all = p.discover();
             let group_filter = group.first().map(|s| s.as_str());
             if let Err(e) = cmd_task_list(&all, group_filter) {
                 handle_error(&e);
@@ -289,10 +289,10 @@ async fn main() {
             group,
             pass_args,
         } => {
-            let ps = providers(None).unwrap_or_else(|e| handle_config_error(e));
+            let p = provider(None).unwrap_or_else(|e| handle_config_error(e));
 
             if list || tasks.is_empty() {
-                let all: Vec<ResolvedTask> = ps.iter().flat_map(|p| p.discover()).collect();
+                let all = p.discover();
                 let group_filter = group.first().map(|s| s.as_str());
                 if let Err(e) = cmd_task_list(&all, group_filter) {
                     handle_error(&e);
@@ -300,12 +300,12 @@ async fn main() {
                 return;
             }
 
-            let resolved: Vec<(usize, ResolvedTask)> = tasks
+            let resolved: Vec<ResolvedTask> = tasks
                 .iter()
-                .map(|p| resolve_across(&ps, p).unwrap_or_else(|e| handle_config_error(e)))
+                .map(|path| p.resolve(path).unwrap_or_else(|e| handle_config_error(e)))
                 .collect();
 
-            let code = cmd_tasks(&ps, &resolved, &pass_args, parallel);
+            let code = cmd_tasks(p.as_ref(), &resolved, &pass_args, parallel);
             process::exit(code);
         }
 

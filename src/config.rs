@@ -31,31 +31,6 @@ pub struct HealthCheck {
     pub grace_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum EnvFileSpec {
-    Single(String),
-    Multiple(Vec<EnvFileItem>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum EnvFileItem {
-    Path(String),
-    Entry(EnvFileEntry),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EnvFileEntry {
-    pub path: String,
-    #[serde(default = "default_true")]
-    pub required: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WatchDef {
     pub paths: Option<Vec<String>>,
@@ -82,7 +57,6 @@ pub struct TaskDef {
     /// INLINE `environment:` only. Env files are recorded (not loaded) in
     /// `env_files` and materialized at run time.
     pub environment: Option<HashMap<String, String>>,
-    pub env_file: Option<EnvFileSpec>,
     /// Resolved env-file entries (paths + `required`), NOT loaded at parse time.
     #[serde(skip)]
     pub env_files: Vec<ResolvedEnvFileEntry>,
@@ -109,7 +83,6 @@ pub struct ServiceDef {
     /// INLINE `environment:` only. Env files are recorded (not loaded) in
     /// `env_files` and materialized at start time.
     pub environment: Option<HashMap<String, String>>,
-    pub env_file: Option<EnvFileSpec>,
     /// Resolved env-file entries (paths + `required`), NOT loaded at parse time.
     #[serde(skip)]
     pub env_files: Vec<ResolvedEnvFileEntry>,
@@ -125,7 +98,9 @@ pub struct ServiceDef {
 // GROUP TREE
 // ============================================================================
 
-/// Properties that cascade down the group tree, ancestor-wins.
+/// Per-level config properties. `env`/`env_files` cascade down the group tree
+/// ancestor-wins; `working_dir` does NOT cascade — it is a same-file default for
+/// units that omit their own, overridden by a unit's explicit `dir:`.
 #[derive(Debug, Clone, Default)]
 pub struct Props {
     /// Nearest-explicit working dir for units that omit their own (absolute).
@@ -713,7 +688,6 @@ fn parse_service_task(
         command,
         working_dir,
         environment,
-        env_file: None,
         env_files,
         description: t
             .get("description")
@@ -839,7 +813,6 @@ fn parse_service(
         command,
         working_dir,
         environment,
-        env_file: None,
         env_files,
         color,
         depends_on,
@@ -891,7 +864,6 @@ fn parse_group_task(
         command,
         working_dir: Some(working_dir),
         environment,
-        env_file: None,
         env_files,
         description: t
             .get("description")
@@ -1138,7 +1110,6 @@ fn add_make_tasks(group: &mut Group, dir: &str) {
                 command,
                 working_dir: Some(dir.to_string()),
                 environment: None,
-                env_file: None,
                 env_files: Vec::new(),
                 description,
                 source: TaskSource::Make,
@@ -1242,6 +1213,22 @@ fn build_child_group(
     adopted_files: &mut HashSet<String>,
     visited: &mut HashSet<String>,
 ) -> Result<Group, ConfigError> {
+    // A group must carry structure: without one of dir/paths/tasks/services/
+    // groups it resolves to nothing. Fail fast instead of yielding an empty group.
+    let has_structure = body.as_mapping().is_some_and(|m| {
+        m.get("dir").is_some()
+            || m.get("paths").is_some()
+            || m.get("tasks").is_some()
+            || m.get("services").is_some()
+            || m.get("groups").is_some()
+    });
+    if !has_structure {
+        return Err(ConfigError::generic(format!(
+            "Group '{}' is empty: define at least one of dir, paths, tasks, services, or groups",
+            name
+        )));
+    }
+
     // A group body may point at a directory. Build that first, then overlay.
     let dir_ref = body
         .as_mapping()
@@ -1695,40 +1682,76 @@ pub fn build_service_lookup(root: &Group) -> HashMap<String, ResolvedService> {
         .collect()
 }
 
-/// Resolve a task path (`task`, `group.task`, or `group.service.task`).
+/// Resolve a task path (`task`, `group.task`, or `group.service.task`) over the
+/// unified group tree — the single resolver for both rig-authored and
+/// make-sourced tasks (make is folded into the tree, so precedence keys off each
+/// task's `source`, not any provider order).
+///
+/// - dotted `path` → exact fully-qualified match; on the (post-M3 unexpected)
+///   chance several tasks share one FQ path, a rig-authored candidate wins
+///   deterministically.
+/// - short name → gather every task whose `name` matches. Exactly one → that
+///   one. Otherwise, a lone rig-authored candidate beats any number of make
+///   targets (force precedence); anything else is genuinely ambiguous.
+///
+/// Listing builds the tree WITHOUT loading env files; env for the chosen run
+/// target is materialized below (fail-fast on a required-missing file).
 pub fn resolve_task(path: &str, root: &Group) -> Result<ResolvedTask, ConfigError> {
-    // Listing builds the tree WITHOUT loading env files; env for the chosen run
-    // target is materialized below (fail-fast on a required-missing file).
-    let all = get_all_tasks(root);
+    let dotted = path.contains('.');
 
-    let mut found = if !path.contains('.') {
-        let matches: Vec<_> = all.into_iter().filter(|t| t.name == path).collect();
-        match matches.len() {
-            0 => return Err(ConfigError::generic(format!("Unknown task '{}'", path))),
-            1 => matches.into_iter().next().unwrap(),
-            _ => {
-                let mut paths: Vec<_> = matches.iter().map(|t| t.path.clone()).collect();
-                paths.sort();
+    let mut candidates: Vec<ResolvedTask> = get_all_tasks(root)
+        .into_iter()
+        .filter(|t| {
+            if dotted {
+                t.path == path
+            } else {
+                t.name == path
+            }
+        })
+        .collect();
+
+    let mut found = match candidates.len() {
+        0 if dotted => {
+            // No exact match — distinguish an unknown top-level group from a
+            // missing task.
+            let first = path.split('.').next().unwrap_or("");
+            if !root.groups.iter().any(|c| c.name == first) {
+                return Err(ConfigError::generic(format!("Unknown group '{}'", first)));
+            }
+            return Err(ConfigError::generic(format!(
+                "Unknown task '{}'. Did you mean 'group.service.task'?",
+                path
+            )));
+        }
+        0 => return Err(ConfigError::generic(format!("Unknown task '{}'", path))),
+        1 => candidates.remove(0),
+        _ if dotted => {
+            // Same FQ path owned by multiple tasks → prefer a rig-authored one.
+            let pos = candidates
+                .iter()
+                .position(|t| t.source == TaskSource::Rig)
+                .unwrap_or(0);
+            candidates.remove(pos)
+        }
+        _ => {
+            // Short name owned by several tasks. A lone rig-authored task wins
+            // outright over make targets; anything else is ambiguous.
+            let rig_positions: Vec<usize> = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.source == TaskSource::Rig)
+                .map(|(i, _)| i)
+                .collect();
+            if rig_positions.len() == 1 {
+                candidates.remove(rig_positions[0])
+            } else {
+                let mut fqs: Vec<String> = candidates.into_iter().map(|t| t.path).collect();
+                fqs.sort();
+                fqs.dedup();
                 return Err(ConfigError::generic(format!(
                     "Ambiguous task '{}'. Matches: {}",
                     path,
-                    paths.join(", ")
-                )));
-            }
-        }
-    } else {
-        match all.into_iter().find(|t| t.path == path) {
-            Some(t) => t,
-            None => {
-                // No exact match — distinguish an unknown top-level group from a
-                // missing task.
-                let first = path.split('.').next().unwrap_or("");
-                if !root.groups.iter().any(|c| c.name == first) {
-                    return Err(ConfigError::generic(format!("Unknown group '{}'", first)));
-                }
-                return Err(ConfigError::generic(format!(
-                    "Unknown task '{}'. Did you mean 'group.service.task'?",
-                    path
+                    fqs.join(", ")
                 )));
             }
         }

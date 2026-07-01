@@ -661,22 +661,21 @@ pub async fn cmd_logs(
 // TASKS
 // ============================================================================
 
-/// Orchestrate running one or more resolved tasks through their provider.
+/// Orchestrate running one or more resolved tasks through the provider.
 ///
 /// Single task runs directly (args allowed). Multiple tasks reject args, then
 /// run sequentially fail-fast, or in parallel (continue on failure, return the
 /// first non-zero exit code). `run` is synchronous, so the parallel path uses
 /// scoped threads.
 pub fn cmd_tasks(
-    providers: &[Box<dyn TaskProvider + Send + Sync>],
-    tasks: &[(usize, ResolvedTask)],
+    provider: &(dyn TaskProvider + Send + Sync),
+    tasks: &[ResolvedTask],
     args: &[String],
     parallel: bool,
 ) -> i32 {
     // Single task
     if tasks.len() == 1 {
-        let (idx, task) = &tasks[0];
-        return providers[*idx].run(task, args);
+        return provider.run(&tasks[0], args);
     }
 
     // Multiple tasks with args is an error
@@ -687,8 +686,8 @@ pub fn cmd_tasks(
 
     if !parallel {
         // Sequential (fail-fast)
-        for (idx, task) in tasks {
-            let code = providers[*idx].run(task, &[]);
+        for task in tasks {
+            let code = provider.run(task, &[]);
             if code != 0 {
                 log_error(&format!(
                     "Task '{}' failed with exit code {}",
@@ -699,13 +698,13 @@ pub fn cmd_tasks(
         }
         0
     } else {
-        // Parallel: scoped threads borrow the shared providers and tasks.
+        // Parallel: scoped threads borrow the shared provider and tasks.
         let results = std::thread::scope(|scope| {
             let handles: Vec<_> = tasks
                 .iter()
-                .map(|(idx, task)| {
+                .map(|task| {
                     scope.spawn(move || {
-                        let code = providers[*idx].run(task, &[]);
+                        let code = provider.run(task, &[]);
                         if code != 0 {
                             log_error(&format!(
                                 "Task '{}' failed with exit code {}",

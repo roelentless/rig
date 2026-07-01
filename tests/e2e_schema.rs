@@ -37,6 +37,30 @@ groups:
 }
 
 #[test]
+fn empty_group_is_rejected() {
+    // A group carrying only props (no dir/paths/tasks/services/groups) resolves
+    // to nothing and must fail fast, naming the group.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  ghost:
+    environment:
+      FOO: bar
+"#,
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Group 'ghost' is empty"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
 fn schema_catches_unknown_requirement_keys() {
     let ctx = TestContext::new();
     ctx.write_file(
