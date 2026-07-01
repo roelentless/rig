@@ -2,20 +2,17 @@ mod common;
 
 use common::*;
 
-/// A Makefile with .PHONY targets and ## descriptions.
+/// A Makefile with .PHONY targets and inline ## descriptions (makex convention).
 const BASIC_MAKEFILE: &str = "\
 .PHONY: build test clean
 
-## build: compile the project
-build:
+build: ## compile the project
 \t@echo build-output
 
-## test: run tests
-test:
+test: ## run tests
 \t@echo test-output
 
-## clean: remove artifacts
-clean:
+clean: ## remove artifacts
 \t@echo clean-output
 ";
 
@@ -198,17 +195,17 @@ groups:
 }
 
 #[test]
-fn makefile_without_phony_uses_described_targets() {
-    // Makefile with no .PHONY — fall back to ## documented targets only
+fn makefile_without_phony_exposes_all_real_targets() {
+    // makex semantics: .PHONY does not gate discovery. Every real target
+    // surfaces (documented or not), so both `publish` and the undocumented
+    // `_internal` appear — the old `_`-prefix hiding convention is gone.
     let ctx = TestContext::new();
     ctx.write_file(
         "Makefile",
         "\
-## publish: publish to registry
-publish:
+publish: ## publish to registry
 \t@echo published
 
-# internal target with no ## comment — should not appear
 _internal:
 \t@echo internal
 ",
@@ -227,8 +224,8 @@ groups:
     let clean = strip_ansi(&result.stdout);
     assert!(clean.contains("proj.publish"), "stdout: {}", clean);
     assert!(
-        !clean.contains("_internal"),
-        "internal should not appear: {}",
+        clean.contains("_internal"),
+        "undocumented target should now appear: {}",
         clean
     );
 }
