@@ -2,33 +2,41 @@ mod common;
 
 use common::*;
 
+// ============================================================================
+// Group tree composition (replaces the old `imports:` flat-merge model).
+//
+// Composition is now folders + `dir:`/`paths:` group pointers. A subfolder with
+// a rig file auto-becomes a child group named by its folder; an authored group
+// with `dir:` renames/reshapes it. Properties cascade ancestor-wins.
+// ============================================================================
+
 #[test]
-fn imports_merge_into_flat_namespace() {
+fn dir_group_renames_folder() {
+    // Mirror the inference-style rename: the `db` folder is pulled in under the
+    // authored name `database` via `dir:`, so the folder name is a lie the
+    // authored group overrides. Bare units in db/rig.yaml attach to `database`.
     let ctx = TestContext::new();
     ctx.write_file(
         "db/rig.yaml",
         r#"
-groups:
-  database:
-    services:
-      postgres:
-        command: sh -c "echo 'postgres started'; sleep 30"
-        working_dir: /tmp
+services:
+  postgres:
+    command: sh -c "echo 'postgres started'; sleep 30"
+    working_dir: /tmp
 "#,
     );
     ctx.write_file(
         "rig.yaml",
         &format!(
             r#"
-imports:
-  - db/rig.yaml
-
 groups:
   {}:
     services:
       api:
         command: sh -c "echo 'api started'; sleep 30"
         working_dir: /tmp
+  database:
+    dir: ./db
 "#,
             TEST_GROUP
         ),
@@ -47,6 +55,7 @@ groups:
         result.stdout
     );
 
+    // Folder `db` was renamed to `database` — the session lives under `database`.
     assert!(session_exists("api", TEST_GROUP));
     assert!(session_exists("postgres", "database"));
 
@@ -56,295 +65,171 @@ groups:
 }
 
 #[test]
-fn star_rig_yaml_recognized() {
+fn child_folder_rig_auto_group() {
+    // A subfolder with a rig.yaml auto-becomes a child group named by its folder,
+    // with no declaration anywhere.
     let ctx = TestContext::new();
     ctx.write_file(
-        "infra.rig.yaml",
+        "backend/rig.yaml",
         r#"
-groups:
-  infra:
-    services:
-      redis:
-        command: sh -c "echo 'redis'; sleep 30"
-        working_dir: /tmp
+services:
+  worker:
+    command: sh -c "echo 'worker started'; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["start", "-d", "worker"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("Started worker"),
+        "stdout: {}",
+        result.stdout
+    );
+    // Auto group name == folder name `backend`.
+    assert!(session_exists("worker", "backend"));
+}
+
+#[test]
+fn paths_pulls_explicit_file_scoped_under_group() {
+    // An authored group with `paths:` pulls an explicit rig file into itself. The
+    // file's folder does NOT also auto-become a group (the file is adopted).
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "pkgs/lib.rig.yaml",
+        r#"
+tasks:
+  build-lib:
+    command: echo lib-built
+    working_dir: /tmp
 "#,
     );
     ctx.write_file(
         "rig.yaml",
-        &format!(
-            r#"
-imports:
-  - infra.rig.yaml
-
+        r#"
 groups:
-  {}:
-    services:
-      app:
-        command: sh -c "echo 'app'; sleep 30"
-        working_dir: /tmp
+  libs:
+    paths:
+      - ./pkgs/lib.rig.yaml
 "#,
-            TEST_GROUP
-        ),
     );
 
-    let result = ctx.rig(&["start", "-d", "redis"]);
+    // Task is addressable under the authored group, scoped as `libs.build-lib`.
+    let run = ctx.rig(&["run", "libs.build-lib"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("lib-built"), "stdout: {}", run.stdout);
+
+    let tasks = ctx.rig(&["tasks"]);
+    let clean = strip_ansi(&tasks.stdout);
+    assert!(clean.contains("libs.build-lib"), "tasks: {}", clean);
+    // The adopted file's folder is not auto-grouped.
+    assert!(
+        !clean.contains("pkgs."),
+        "pkgs leaked as auto group: {}",
+        clean
+    );
+}
+
+#[test]
+fn top_level_bare_task_runs() {
+    // A top-level (bare, no group wrapper) task attaches to the root group and is
+    // addressable by its bare name.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+tasks:
+  deploy:
+    command: echo bare-deploy-output
+    working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["run", "deploy"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert!(
-        result.stdout.contains("Started redis"),
+        result.stdout.contains("bare-deploy-output"),
         "stdout: {}",
+        result.stdout
+    );
+
+    let tasks = ctx.rig(&["tasks"]);
+    let clean = strip_ansi(&tasks.stdout);
+    // Bare name, not group-prefixed.
+    assert!(clean.contains("deploy"), "tasks: {}", clean);
+}
+
+#[test]
+fn top_level_bare_service_listed() {
+    // A top-level bare service attaches to the root group and surfaces in config.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+services:
+  web:
+    command: sh -c "echo web; sleep 30"
+    working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["config"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("web"),
+        "config stdout: {}",
         result.stdout
     );
 }
 
 #[test]
-fn circular_import_error() {
+fn ancestor_wins_env_cascade_reaches_process() {
+    // A root-level `environment:` overrides a child group's service env, and the
+    // merged value reaches the actual tmux process (control from above).
     let ctx = TestContext::new();
     ctx.write_file(
         "rig.yaml",
         r#"
-imports:
-  - a/rig.yaml
-
-groups:
-  root:
-    services:
-      svc1:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-    ctx.write_file(
-        "a/rig.yaml",
-        r#"
-imports:
-  - ../rig.yaml
-
-groups:
-  a-group:
-    services:
-      svc2:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-
-    let result = ctx.rig(&["ps"]);
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("Circular import detected"),
-        "stderr: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn import_not_found_error() {
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "rig.yaml",
-        &format!(
-            r#"
-imports:
-  - nonexistent/rig.yaml
-
-groups:
-  {}:
-    services:
-      svc:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-            TEST_GROUP
-        ),
-    );
-
-    let result = ctx.rig(&["ps"]);
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("Import not found"),
-        "stderr: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn duplicate_group_error() {
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "sub/rig.yaml",
-        r#"
-groups:
-  mygroup:
-    services:
-      svc2:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-imports:
-  - sub/rig.yaml
-
-groups:
-  mygroup:
-    services:
-      svc1:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-
-    let result = ctx.rig(&["ps"]);
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("Duplicate group"),
-        "stderr: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn duplicate_service_error() {
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "sub/rig.yaml",
-        r#"
-groups:
-  group-b:
-    services:
-      api:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-    ctx.write_file(
-        "rig.yaml",
-        r#"
-imports:
-  - sub/rig.yaml
-
-groups:
-  group-a:
-    services:
-      api:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    );
-
-    let result = ctx.rig(&["ps"]);
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("Duplicate service"),
-        "stderr: {}",
-        result.stderr
-    );
-}
-
-#[test]
-fn same_file_imported_twice_deduped() {
-    let ctx = TestContext::new();
-    ctx.write_file(
-        "shared/rig.yaml",
-        r#"
-groups:
-  shared:
-    services:
-      db:
-        command: sh -c "echo 'db'; sleep 30"
-        working_dir: /tmp
-"#,
-    );
-    ctx.write_file(
-        "app/rig.yaml",
-        r#"
-imports:
-  - ../shared/rig.yaml
-
+environment:
+  SHARED: from-root
 groups:
   app:
     services:
-      api:
-        command: sh -c "echo 'api'; sleep 30"
+      cascade-svc:
+        command: sh -c "echo SHARED=$SHARED; sleep 30"
         working_dir: /tmp
+        environment:
+          SHARED: from-child
 "#,
     );
-    ctx.write_file(
-        "rig.yaml",
-        &format!(
-            r#"
-imports:
-  - shared/rig.yaml
-  - app/rig.yaml
 
-groups:
-  {}:
-    services:
-      root-svc:
-        command: sh -c "echo 'root'; sleep 30"
-        working_dir: /tmp
-"#,
-            TEST_GROUP
-        ),
-    );
+    let start = ctx.rig(&["start", "-d", "cascade-svc"]);
+    assert_eq!(start.code, 0, "stderr: {}", start.stderr);
+    assert!(session_exists("cascade-svc", "app"));
+    delay_ms(500);
 
-    let result = ctx.rig(&["start", "-d", "db", "api", "root-svc"]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let logs = ctx.rig(&["logs", "cascade-svc"]);
     assert!(
-        result.stdout.contains("Started db"),
-        "stdout: {}",
-        result.stdout
+        logs.stdout.contains("SHARED=from-root"),
+        "root env must override child and reach the process, stdout: {}",
+        logs.stdout
     );
-    assert!(
-        result.stdout.contains("Started api"),
-        "stdout: {}",
-        result.stdout
-    );
-    assert!(
-        result.stdout.contains("Started root-svc"),
-        "stdout: {}",
-        result.stdout
-    );
-
-    assert!(session_exists("db", "shared"));
-    assert!(session_exists("api", "app"));
-    assert!(session_exists("root-svc", TEST_GROUP));
 }
 
 #[test]
-fn paths_relative_to_config_location() {
+fn folder_aware_relative_env_file() {
+    // env_file resolves relative to the FILE's own directory, not CWD.
     let ctx = TestContext::new();
     ctx.write_file("backend/backend.env", "BACKEND_VAR=from-backend-env\n");
     ctx.write_file(
         "backend/rig.yaml",
         r#"
-groups:
-  backend:
-    services:
-      api:
-        command: sh -c "echo BACKEND_VAR=$BACKEND_VAR; sleep 30"
-        working_dir: .
-        env_file: ./backend.env
+services:
+  api:
+    command: sh -c "echo BACKEND_VAR=$BACKEND_VAR; sleep 30"
+    working_dir: .
+    env_file: ./backend.env
 "#,
-    );
-    ctx.write_file(
-        "rig.yaml",
-        &format!(
-            r#"
-imports:
-  - backend/rig.yaml
-
-groups:
-  {}:
-    services:
-      root-svc:
-        command: sh -c "echo 'root'; sleep 30"
-        working_dir: /tmp
-"#,
-            TEST_GROUP
-        ),
     );
 
     ctx.rig(&["start", "-d", "api"]);
@@ -359,28 +244,48 @@ groups:
 }
 
 #[test]
-fn depends_on_across_files() {
+fn folder_aware_relative_working_dir() {
+    // A relative `working_dir: .` resolves to the declaring file's folder.
     let ctx = TestContext::new();
     ctx.write_file(
-        "db/rig.yaml",
+        "backend/rig.yaml",
         r#"
-groups:
-  database:
-    services:
-      postgres:
-        command: sh -c "echo 'postgres started'; sleep 30"
-        working_dir: /tmp
-        healthcheck:
-          grace_ms: 100
+tasks:
+  show-pwd:
+    command: pwd
+    working_dir: .
+"#,
+    );
+
+    let result = ctx.rig(&["run", "backend.show-pwd"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("/backend"),
+        "working_dir should resolve into backend/, stdout: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn depends_on_across_groups() {
+    // depends_on references a service by bare name across folder groups; ordering
+    // and healthcheck grace behavior are unchanged.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "database/rig.yaml",
+        r#"
+services:
+  postgres:
+    command: sh -c "echo 'postgres started'; sleep 30"
+    working_dir: /tmp
+    healthcheck:
+      grace_ms: 100
 "#,
     );
     ctx.write_file(
         "rig.yaml",
         &format!(
             r#"
-imports:
-  - db/rig.yaml
-
 groups:
   {}:
     services:
@@ -399,11 +304,8 @@ groups:
     let pg_idx = result
         .stdout
         .find("Started postgres")
-        .expect("postgres should be started");
-    let api_idx = result
-        .stdout
-        .find("Started api")
-        .expect("api should be started");
+        .expect("postgres started");
+    let api_idx = result.stdout.find("Started api").expect("api started");
     assert!(pg_idx < api_idx, "postgres should start before api");
 
     assert!(session_exists("postgres", "database"));
@@ -411,26 +313,21 @@ groups:
 }
 
 #[test]
-fn depends_on_invalid_across_files_errors() {
+fn depends_on_invalid_across_groups_errors() {
     let ctx = TestContext::new();
     ctx.write_file(
         "sub/rig.yaml",
         r#"
-groups:
-  sub:
-    services:
-      svc:
-        command: echo "test"
-        working_dir: /tmp
+services:
+  svc:
+    command: echo "test"
+    working_dir: /tmp
 "#,
     );
     ctx.write_file(
         "rig.yaml",
         &format!(
             r#"
-imports:
-  - sub/rig.yaml
-
 groups:
   {}:
     services:
@@ -449,106 +346,5 @@ groups:
         result.stderr.contains("depends on unknown service"),
         "stderr: {}",
         result.stderr
-    );
-}
-
-#[test]
-fn discover_lists_files() {
-    // Create a temp dir manually since discover needs a specific directory structure
-    let dir = tempfile::tempdir_in("/tmp").unwrap();
-    let dir_path = dir.path().to_string_lossy().to_string();
-
-    std::fs::create_dir_all(format!("{}/sub", dir_path)).unwrap();
-    std::fs::write(
-        format!("{}/rig.yaml", dir_path),
-        r#"
-groups:
-  root:
-    services:
-      svc:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        format!("{}/sub/rig.yaml", dir_path),
-        r#"
-groups:
-  sub:
-    services:
-      svc2:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    )
-    .unwrap();
-
-    let ctx = TestContext::new();
-    let result = ctx.rig(&["discover", "--dry-run", &dir_path]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    assert!(
-        result.stdout.contains("rig.yaml"),
-        "stdout: {}",
-        result.stdout
-    );
-    assert!(
-        result.stdout.contains("sub/rig.yaml"),
-        "stdout: {}",
-        result.stdout
-    );
-    assert!(
-        result.stdout.contains("Missing"),
-        "stdout: {}",
-        result.stdout
-    );
-    assert!(
-        result.stdout.contains("Dry run"),
-        "stdout: {}",
-        result.stdout
-    );
-}
-
-#[test]
-fn discover_with_yes_updates_config() {
-    let dir = tempfile::tempdir_in("/tmp").unwrap();
-    let dir_path = dir.path().to_string_lossy().to_string();
-
-    std::fs::create_dir_all(format!("{}/new-service", dir_path)).unwrap();
-    std::fs::write(
-        format!("{}/rig.yaml", dir_path),
-        r#"
-groups:
-  root:
-    services:
-      svc:
-        command: echo "test"
-        working_dir: /tmp
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        format!("{}/new-service/rig.yaml", dir_path),
-        r#"
-groups:
-  new:
-    services:
-      new-svc:
-        command: echo "new"
-        working_dir: /tmp
-"#,
-    )
-    .unwrap();
-
-    let ctx = TestContext::new();
-    let result = ctx.rig(&["discover", "--yes", &dir_path]);
-    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-
-    let content = std::fs::read_to_string(format!("{}/rig.yaml", dir_path)).unwrap();
-    assert!(content.contains("imports"), "config: {}", content);
-    assert!(
-        content.contains("new-service/rig.yaml"),
-        "config: {}",
-        content
     );
 }

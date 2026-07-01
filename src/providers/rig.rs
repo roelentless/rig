@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-use crate::config::{get_all_tasks, resolve_task, Config, ConfigError, ResolvedTask};
+use crate::config::{get_all_tasks, resolve_task, ConfigError, Group, ResolvedTask};
 use crate::output::{log_error, log_verbose};
 
 use super::TaskProvider;
 
-/// The rig provider: tasks defined in the loaded rig `Config`.
+/// The rig provider: tasks defined in the loaded rig group tree.
 pub struct RigProvider {
-    config: Config,
+    root: Group,
 }
 
 impl RigProvider {
-    pub fn new(config: Config) -> Self {
-        RigProvider { config }
+    pub fn new(root: Group) -> Self {
+        RigProvider { root }
     }
 }
 
@@ -23,11 +23,11 @@ impl TaskProvider for RigProvider {
     }
 
     fn discover(&self) -> Vec<ResolvedTask> {
-        get_all_tasks(&self.config)
+        get_all_tasks(&self.root)
     }
 
     fn resolve(&self, path: &str) -> Result<ResolvedTask, ConfigError> {
-        resolve_task(path, &self.config)
+        resolve_task(path, &self.root)
     }
 
     fn run(&self, task: &ResolvedTask, args: &[String]) -> i32 {
@@ -109,8 +109,7 @@ fn run_task(resolved: &ResolvedTask, args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GroupDef, TaskDef};
-    use std::collections::HashMap;
+    use crate::config::{Group, Props, TaskDef};
     use tempfile::TempDir;
 
     fn task_def(command: &str) -> TaskDef {
@@ -123,35 +122,42 @@ mod tests {
         }
     }
 
-    /// A config with two group-level tasks under `alpha` and one under `beta`,
+    fn child_group(name: &str, tasks: Vec<(String, TaskDef)>) -> Group {
+        Group {
+            name: name.to_string(),
+            dir: None,
+            paths: None,
+            props: Props::default(),
+            tasks,
+            services: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
+
+    /// A tree with two group-level tasks under `alpha` and one under `beta`,
     /// with `deploy` intentionally duplicated across groups for ambiguity.
-    fn sample_config() -> Config {
-        let mut alpha_tasks = HashMap::new();
-        alpha_tasks.insert("build".to_string(), task_def("echo build"));
-        alpha_tasks.insert("deploy".to_string(), task_def("echo alpha deploy"));
-
-        let mut beta_tasks = HashMap::new();
-        beta_tasks.insert("deploy".to_string(), task_def("echo beta deploy"));
-
-        let mut groups = HashMap::new();
-        groups.insert(
-            "alpha".to_string(),
-            GroupDef {
-                working_dir: None,
-                services: None,
-                tasks: Some(alpha_tasks),
-            },
-        );
-        groups.insert(
-            "beta".to_string(),
-            GroupDef {
-                working_dir: None,
-                services: None,
-                tasks: Some(beta_tasks),
-            },
-        );
-
-        Config { groups }
+    fn sample_config() -> Group {
+        Group {
+            name: String::new(),
+            dir: None,
+            paths: None,
+            props: Props::default(),
+            tasks: Vec::new(),
+            services: Vec::new(),
+            groups: vec![
+                child_group(
+                    "alpha",
+                    vec![
+                        ("build".to_string(), task_def("echo build")),
+                        ("deploy".to_string(), task_def("echo alpha deploy")),
+                    ],
+                ),
+                child_group(
+                    "beta",
+                    vec![("deploy".to_string(), task_def("echo beta deploy"))],
+                ),
+            ],
+        }
     }
 
     #[test]

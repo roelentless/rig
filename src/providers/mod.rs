@@ -41,8 +41,8 @@ pub fn providers(
 
     // Optional now: a missing rig config is not an error, but a malformed one
     // still fails loudly (try_load_config only maps not-found to None).
-    if let Some((config, _dir)) = try_load_config(config_path)? {
-        ps.push(Box::new(RigProvider::new(config)));
+    if let Some((root, _dir)) = try_load_config(config_path)? {
+        ps.push(Box::new(RigProvider::new(root)));
     }
 
     // Downward, gitignore-aware walk: one MakeProvider per discovered Makefile,

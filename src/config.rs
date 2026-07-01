@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -94,24 +94,47 @@ pub struct ServiceDef {
     pub requirements: Option<Vec<RequirementDef>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GroupDef {
-    #[serde(skip_serializing_if = "Option::is_none")]
+// ============================================================================
+// GROUP TREE
+// ============================================================================
+
+/// Properties that cascade down the group tree, ancestor-wins.
+#[derive(Debug, Clone, Default)]
+pub struct Props {
+    /// Nearest-explicit working dir for units that omit their own (absolute).
     pub working_dir: Option<String>,
-    pub services: Option<HashMap<String, ServiceDef>>,
-    pub tasks: Option<HashMap<String, TaskDef>>,
+    /// Effective inline environment for this level (env_file already folded in,
+    /// inline `environment:` overriding it — resolved at parse time).
+    pub env: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Config {
-    pub groups: HashMap<String, GroupDef>,
+/// One level of the config hierarchy. Backed by a discovered directory (`dir`),
+/// explicit rig files (`paths`), inline units, and/or child groups. `name` is
+/// `""` at the root (CWD → bare names); a folder name or authored group name
+/// otherwise.
+#[derive(Debug, Clone)]
+pub struct Group {
+    pub name: String,
+    pub dir: Option<PathBuf>,
+    pub paths: Option<Vec<PathBuf>>,
+    pub props: Props,
+    pub tasks: Vec<(String, TaskDef)>,
+    pub services: Vec<(String, ServiceDef)>,
+    pub groups: Vec<Group>,
 }
 
-/// Raw config as parsed from YAML (before processing)
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RawConfig {
-    pub imports: Option<Vec<String>>,
-    pub groups: Option<HashMap<String, serde_yaml::Value>>,
+impl Group {
+    fn empty(name: &str, dir: Option<PathBuf>) -> Self {
+        Group {
+            name: name.to_string(),
+            dir,
+            paths: None,
+            props: Props::default(),
+            tasks: Vec::new(),
+            services: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
 }
 
 // ============================================================================
@@ -144,16 +167,39 @@ pub struct ResolvedTask {
 pub const CONFIG_NAMES: &[&str] = &["rig.yaml", "rig.yml"];
 pub const LOG_DIR: &str = ".rig/logs";
 
+fn is_rig_file_name(name: &str) -> bool {
+    name == "rig.yaml" || name == "rig.yml" || name.ends_with(".rig.yaml")
+}
+
 // ============================================================================
 // SCHEMA VALIDATION
 // ============================================================================
 
-/// Known keys at each level of the config hierarchy
 fn root_keys() -> HashSet<&'static str> {
-    ["imports", "groups"].into_iter().collect()
+    [
+        "tasks",
+        "services",
+        "environment",
+        "env_file",
+        "working_dir",
+        "groups",
+    ]
+    .into_iter()
+    .collect()
 }
 fn group_keys() -> HashSet<&'static str> {
-    ["services", "tasks", "working_dir"].into_iter().collect()
+    [
+        "dir",
+        "paths",
+        "tasks",
+        "services",
+        "environment",
+        "env_file",
+        "working_dir",
+        "groups",
+    ]
+    .into_iter()
+    .collect()
 }
 fn service_keys() -> HashSet<&'static str> {
     [
@@ -202,8 +248,8 @@ fn validate_keys(
     allowed: &HashSet<&str>,
     context: &str,
     config_path: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
+    errors: &mut Vec<String>,
+) {
     for key in obj.keys() {
         if let Some(key_str) = key.as_str() {
             if !allowed.contains(key_str) {
@@ -220,156 +266,150 @@ fn validate_keys(
             }
         }
     }
-    errors
+}
+
+fn validate_service(
+    svc_label: &str,
+    s: &serde_yaml::Mapping,
+    config_path: &str,
+    errors: &mut Vec<String>,
+) {
+    validate_keys(
+        s,
+        &service_keys(),
+        &format!("service '{}'", svc_label),
+        config_path,
+        errors,
+    );
+
+    if let Some(w) = s.get("watch").and_then(|v| v.as_mapping()) {
+        validate_keys(
+            w,
+            &watch_keys(),
+            &format!("watch in service '{}'", svc_label),
+            config_path,
+            errors,
+        );
+    }
+    if let Some(hc) = s.get("healthcheck").and_then(|v| v.as_mapping()) {
+        validate_keys(
+            hc,
+            &healthcheck_keys(),
+            &format!("healthcheck in service '{}'", svc_label),
+            config_path,
+            errors,
+        );
+    }
+    if let Some(arr) = s.get("env_file").and_then(|v| v.as_sequence()) {
+        for entry in arr {
+            if let Some(e) = entry.as_mapping() {
+                validate_keys(
+                    e,
+                    &env_file_entry_keys(),
+                    &format!("env_file entry in service '{}'", svc_label),
+                    config_path,
+                    errors,
+                );
+            }
+        }
+    }
+    if let Some(arr) = s.get("requirements").and_then(|v| v.as_sequence()) {
+        for entry in arr {
+            if let Some(r) = entry.as_mapping() {
+                validate_keys(
+                    r,
+                    &requirement_keys(),
+                    &format!("requirement in service '{}'", svc_label),
+                    config_path,
+                    errors,
+                );
+            }
+        }
+    }
+    if let Some(tasks) = s.get("tasks").and_then(|v| v.as_mapping()) {
+        for (tk, tv) in tasks {
+            let tname = tk.as_str().unwrap_or("?");
+            if let Some(t) = tv.as_mapping() {
+                validate_keys(
+                    t,
+                    &task_keys(),
+                    &format!("task '{}.{}'", svc_label, tname),
+                    config_path,
+                    errors,
+                );
+            }
+        }
+    }
+}
+
+/// Validate the tasks/services blocks of one level (root or a group body).
+fn validate_units(
+    level: &serde_yaml::Mapping,
+    label: &str,
+    config_path: &str,
+    errors: &mut Vec<String>,
+) {
+    if let Some(services) = level.get("services").and_then(|v| v.as_mapping()) {
+        for (svc_key, svc_val) in services {
+            let svc_name = svc_key.as_str().unwrap_or("?");
+            if let Some(s) = svc_val.as_mapping() {
+                let svc_label = if label.is_empty() {
+                    svc_name.to_string()
+                } else {
+                    format!("{}.{}", label, svc_name)
+                };
+                validate_service(&svc_label, s, config_path, errors);
+            }
+        }
+    }
+    if let Some(tasks) = level.get("tasks").and_then(|v| v.as_mapping()) {
+        for (tk, tv) in tasks {
+            let tname = tk.as_str().unwrap_or("?");
+            if let Some(t) = tv.as_mapping() {
+                let tlabel = if label.is_empty() {
+                    tname.to_string()
+                } else {
+                    format!("{}.{}", label, tname)
+                };
+                validate_keys(
+                    t,
+                    &task_keys(),
+                    &format!("task '{}'", tlabel),
+                    config_path,
+                    errors,
+                );
+            }
+        }
+    }
+}
+
+fn validate_groups(groups: &serde_yaml::Mapping, config_path: &str, errors: &mut Vec<String>) {
+    for (group_key, group_val) in groups {
+        let group_name = group_key.as_str().unwrap_or("?");
+        if let Some(g) = group_val.as_mapping() {
+            validate_keys(
+                g,
+                &group_keys(),
+                &format!("group '{}'", group_name),
+                config_path,
+                errors,
+            );
+            validate_units(g, group_name, config_path, errors);
+            if let Some(children) = g.get("groups").and_then(|v| v.as_mapping()) {
+                validate_groups(children, config_path, errors);
+            }
+        }
+    }
 }
 
 fn validate_config_schema(raw: &serde_yaml::Value, config_path: &str) -> Result<(), ConfigError> {
     let mut errors = Vec::new();
 
     if let Some(root) = raw.as_mapping() {
-        errors.extend(validate_keys(
-            root,
-            &root_keys(),
-            "config root",
-            config_path,
-        ));
-
-        if let Some(groups_val) = root.get("groups") {
-            if let Some(groups) = groups_val.as_mapping() {
-                for (group_key, group_val) in groups {
-                    let group_name = group_key.as_str().unwrap_or("?");
-                    if let Some(g) = group_val.as_mapping() {
-                        errors.extend(validate_keys(
-                            g,
-                            &group_keys(),
-                            &format!("group '{}'", group_name),
-                            config_path,
-                        ));
-
-                        // Validate services
-                        if let Some(services_val) = g.get("services") {
-                            if let Some(services) = services_val.as_mapping() {
-                                for (svc_key, svc_val) in services {
-                                    let svc_name = svc_key.as_str().unwrap_or("?");
-                                    if let Some(s) = svc_val.as_mapping() {
-                                        errors.extend(validate_keys(
-                                            s,
-                                            &service_keys(),
-                                            &format!("service '{}.{}'", group_name, svc_name),
-                                            config_path,
-                                        ));
-
-                                        // Validate watch
-                                        if let Some(watch_val) = s.get("watch") {
-                                            if let Some(w) = watch_val.as_mapping() {
-                                                errors.extend(validate_keys(
-                                                    w,
-                                                    &watch_keys(),
-                                                    &format!(
-                                                        "watch in service '{}.{}'",
-                                                        group_name, svc_name
-                                                    ),
-                                                    config_path,
-                                                ));
-                                            }
-                                        }
-
-                                        // Validate healthcheck
-                                        if let Some(hc_val) = s.get("healthcheck") {
-                                            if let Some(hc) = hc_val.as_mapping() {
-                                                errors.extend(validate_keys(
-                                                    hc,
-                                                    &healthcheck_keys(),
-                                                    &format!(
-                                                        "healthcheck in service '{}.{}'",
-                                                        group_name, svc_name
-                                                    ),
-                                                    config_path,
-                                                ));
-                                            }
-                                        }
-
-                                        // Validate env_file entries
-                                        if let Some(ef_val) = s.get("env_file") {
-                                            if let Some(arr) = ef_val.as_sequence() {
-                                                for entry in arr {
-                                                    if let Some(e) = entry.as_mapping() {
-                                                        errors.extend(validate_keys(
-                                                            e,
-                                                            &env_file_entry_keys(),
-                                                            &format!(
-                                                                "env_file entry in service '{}.{}'",
-                                                                group_name, svc_name
-                                                            ),
-                                                            config_path,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Validate requirements
-                                        if let Some(req_val) = s.get("requirements") {
-                                            if let Some(arr) = req_val.as_sequence() {
-                                                for entry in arr {
-                                                    if let Some(r) = entry.as_mapping() {
-                                                        errors.extend(validate_keys(
-                                                            r,
-                                                            &requirement_keys(),
-                                                            &format!(
-                                                                "requirement in service '{}.{}'",
-                                                                group_name, svc_name
-                                                            ),
-                                                            config_path,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Validate service-level tasks
-                                        if let Some(tasks_val) = s.get("tasks") {
-                                            if let Some(tasks) = tasks_val.as_mapping() {
-                                                for (tk, tv) in tasks {
-                                                    let tname = tk.as_str().unwrap_or("?");
-                                                    if let Some(t) = tv.as_mapping() {
-                                                        errors.extend(validate_keys(
-                                                            t,
-                                                            &task_keys(),
-                                                            &format!(
-                                                                "task '{}.{}.{}'",
-                                                                group_name, svc_name, tname
-                                                            ),
-                                                            config_path,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Validate group-level tasks
-                        if let Some(tasks_val) = g.get("tasks") {
-                            if let Some(tasks) = tasks_val.as_mapping() {
-                                for (tk, tv) in tasks {
-                                    let tname = tk.as_str().unwrap_or("?");
-                                    if let Some(t) = tv.as_mapping() {
-                                        errors.extend(validate_keys(
-                                            t,
-                                            &task_keys(),
-                                            &format!("task '{}.{}'", group_name, tname),
-                                            config_path,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        validate_keys(root, &root_keys(), "config root", config_path, &mut errors);
+        validate_units(root, "", config_path, &mut errors);
+        if let Some(groups) = root.get("groups").and_then(|v| v.as_mapping()) {
+            validate_groups(groups, config_path, &mut errors);
         }
     }
 
@@ -432,7 +472,6 @@ fn load_env_files(
     for entry in entries {
         match std::fs::read_to_string(&entry.path) {
             Ok(content) => {
-                // Parse .env file
                 for line in content.lines() {
                     let line = line.trim();
                     if line.is_empty() || line.starts_with('#') {
@@ -441,7 +480,6 @@ fn load_env_files(
                     if let Some(eq_pos) = line.find('=') {
                         let key = line[..eq_pos].trim().to_string();
                         let mut val = line[eq_pos + 1..].trim().to_string();
-                        // Strip surrounding quotes
                         if (val.starts_with('"') && val.ends_with('"'))
                             || (val.starts_with('\'') && val.ends_with('\''))
                         {
@@ -458,7 +496,6 @@ fn load_env_files(
                         entry.original_path, e
                     )));
                 }
-                // required: false — silently skip
             }
         }
     }
@@ -517,812 +554,889 @@ fn resolve_env_file_spec(spec: &serde_yaml::Value, config_dir: &str) -> Vec<Reso
     entries
 }
 
-// ============================================================================
-// CONFIG LOADING
-// ============================================================================
-
-/// Walk upward from start_dir to find the nearest rig config file.
-pub fn find_nearest_config(start_dir: &Path) -> Result<PathBuf, ConfigError> {
-    let mut dir = std::fs::canonicalize(start_dir).map_err(|e| {
-        ConfigError::generic(format!(
-            "Cannot resolve path '{}': {}",
-            start_dir.display(),
-            e
-        ))
-    })?;
-
-    loop {
-        // Check standard names first
-        for name in CONFIG_NAMES {
-            let path = dir.join(name);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-
-        // Check for *.rig.yaml files
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.ends_with(".rig.yaml") && name_str != "rig.yaml" {
-                    if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                        return Ok(entry.path());
-                    }
-                }
-            }
-        }
-
-        // Move to parent
-        if let Some(parent) = dir.parent() {
-            if parent == dir {
-                break;
-            }
-            dir = parent.to_path_buf();
-        } else {
-            break;
-        }
-    }
-
-    Err(ConfigError::generic(
-        "No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml",
-    ))
+/// Parse an inline `environment:` mapping into normalized string pairs.
+fn parse_inline_env(m: &serde_yaml::Mapping) -> Option<HashMap<String, String>> {
+    m.get("environment")
+        .and_then(|v| v.as_mapping())
+        .map(|env_map| {
+            let map: HashMap<String, serde_yaml::Value> = env_map
+                .iter()
+                .filter_map(|(k, v)| k.as_str().map(|ks| (ks.to_string(), v.clone())))
+                .collect();
+            normalize_env_values(&map)
+        })
 }
 
-/// Context for recursive config loading
-struct LoadContext {
-    loaded: HashSet<String>,
-    import_chain: Vec<String>,
-}
-
-/// Result of loading a config tree
-struct LoadResult {
-    groups: HashMap<String, GroupDef>,
-    seen_services: HashMap<String, String>, // service_name -> group_name
-}
-
-fn load_config_recursive(
-    config_path: &str,
+/// Load a level's `env_file` + inline `environment` into a single map, inline
+/// overriding the file (fail fast on a required-missing file).
+fn load_level_env(
+    m: &serde_yaml::Mapping,
     config_dir: &str,
-    ctx: &mut LoadContext,
-) -> Result<LoadResult, ConfigError> {
-    let abs_path = normalize_path(config_path);
+) -> Result<HashMap<String, String>, ConfigError> {
+    let mut env = HashMap::new();
+    if let Some(ef_val) = m.get("env_file") {
+        let entries = resolve_env_file_spec(ef_val, config_dir);
+        if !entries.is_empty() {
+            env = load_env_files(&entries)?;
+        }
+    }
+    if let Some(inline) = parse_inline_env(m) {
+        env.extend(inline);
+    }
+    Ok(env)
+}
 
-    // Circular import check
-    if ctx.import_chain.contains(&abs_path) {
-        let mut cycle_parts: Vec<String> = ctx
-            .import_chain
-            .iter()
-            .map(|p| {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let cwd_str = cwd.to_string_lossy();
-                if p.starts_with(cwd_str.as_ref()) {
-                    format!("./{}", &p[cwd_str.len()..].trim_start_matches('/'))
-                } else {
-                    p.clone()
-                }
+// ============================================================================
+// UNIT PARSING (service / task) — reused verbatim across every level
+// ============================================================================
+
+fn parse_watch(s: &serde_yaml::Mapping, working_dir: &str) -> Option<WatchDef> {
+    let w = s.get("watch").and_then(|v| v.as_mapping())?;
+    let mut wd = WatchDef::default();
+    if let Some(seq) = w.get("paths").and_then(|v| v.as_sequence()) {
+        wd.paths = Some(
+            seq.iter()
+                .filter_map(|p| p.as_str().map(|s| resolve_path(s, working_dir)))
+                .collect(),
+        );
+    }
+    if let Some(seq) = w.get("extensions").and_then(|v| v.as_sequence()) {
+        wd.extensions = Some(
+            seq.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    if let Some(seq) = w.get("patterns").and_then(|v| v.as_sequence()) {
+        wd.patterns = Some(
+            seq.iter()
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    if let Some(seq) = w.get("ignore").and_then(|v| v.as_sequence()) {
+        wd.ignore = Some(
+            seq.iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    if let Some(deb_val) = w.get("debounce") {
+        wd.debounce = Some(
+            deb_val
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| format!("{}", deb_val.as_u64().unwrap_or(0))),
+        );
+    }
+    Some(wd)
+}
+
+/// Parse a task belonging to a service (working_dir stays optional; falls back
+/// to the service dir at flatten time).
+fn parse_service_task(
+    label: &str,
+    t: &serde_yaml::Mapping,
+    config_dir: &str,
+    config_path: &str,
+) -> Result<TaskDef, ConfigError> {
+    let command = t
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ConfigError::generic(format!(
+                "Task '{}' in {} must have a 'command' field",
+                label, config_path
+            ))
+        })?
+        .to_string();
+
+    let working_dir = t
+        .get("working_dir")
+        .and_then(|v| v.as_str())
+        .map(|wd| resolve_path(wd, config_dir));
+
+    let mut env = load_level_env(t, config_dir)?;
+    let environment = if env.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(&mut env))
+    };
+
+    Ok(TaskDef {
+        command,
+        working_dir,
+        environment,
+        env_file: None,
+        description: t
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    })
+}
+
+fn parse_service(
+    label: &str,
+    s: &serde_yaml::Mapping,
+    config_dir: &str,
+    config_path: &str,
+) -> Result<ServiceDef, ConfigError> {
+    let command = s
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ConfigError::generic(format!(
+                "Service '{}' in {} must have a 'command' field",
+                label, config_path
+            ))
+        })?
+        .to_string();
+
+    let working_dir_raw = s
+        .get("working_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ConfigError::generic(format!(
+                "Service '{}' in {} must have a 'working_dir' field",
+                label, config_path
+            ))
+        })?;
+    let working_dir = resolve_path(working_dir_raw, config_dir);
+
+    let mut env = load_level_env(s, config_dir)?;
+    let environment = if env.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(&mut env))
+    };
+
+    let depends_on = s.get("depends_on").and_then(|v| {
+        v.as_sequence().map(|seq| {
+            seq.iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect::<Vec<String>>()
+        })
+    });
+
+    let healthcheck = s.get("healthcheck").and_then(|v| {
+        v.as_mapping().map(|m| HealthCheck {
+            grace_ms: m.get("grace_ms").and_then(|v| v.as_u64()),
+        })
+    });
+
+    let color = s.get("color").and_then(|v| v.as_str()).map(String::from);
+
+    let watch = parse_watch(s, &working_dir);
+
+    let requirements = if let Some(seq) = s.get("requirements").and_then(|v| v.as_sequence()) {
+        let mut reqs = Vec::new();
+        for entry in seq {
+            let m = entry.as_mapping().ok_or_else(|| {
+                ConfigError::generic(format!(
+                    "Invalid requirement entry in service '{}' ({}): must be an object with 'check' and 'command'",
+                    label, config_path
+                ))
+            })?;
+            let check = m
+                .get("check")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ConfigError::generic(format!(
+                        "Requirement in service '{}' ({}) must have a 'check' string",
+                        label, config_path
+                    ))
+                })?
+                .to_string();
+            let cmd = m
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ConfigError::generic(format!(
+                        "Requirement in service '{}' ({}) must have a 'command' string",
+                        label, config_path
+                    ))
+                })?
+                .to_string();
+            reqs.push(RequirementDef {
+                check,
+                command: cmd,
+            });
+        }
+        Some(reqs)
+    } else {
+        None
+    };
+
+    let svc_tasks = if let Some(tasks) = s.get("tasks").and_then(|v| v.as_mapping()) {
+        let mut tm = HashMap::new();
+        for (tk, tv) in tasks {
+            let tname = tk.as_str().unwrap_or("?");
+            let t = tv.as_mapping().ok_or_else(|| {
+                ConfigError::generic(format!(
+                    "Task '{}.{}' in {} must be a mapping",
+                    label, tname, config_path
+                ))
+            })?;
+            let tdef =
+                parse_service_task(&format!("{}.{}", label, tname), t, config_dir, config_path)?;
+            tm.insert(tname.to_string(), tdef);
+        }
+        Some(tm)
+    } else {
+        None
+    };
+
+    Ok(ServiceDef {
+        command,
+        working_dir,
+        environment,
+        env_file: None,
+        color,
+        depends_on,
+        healthcheck,
+        tasks: svc_tasks,
+        watch,
+        requirements,
+    })
+}
+
+/// Parse a group/root-level task. `default_wd` is the nearest-explicit working
+/// dir; a group task must resolve to some working dir (its own or inherited).
+fn parse_group_task(
+    label: &str,
+    t: &serde_yaml::Mapping,
+    config_dir: &str,
+    config_path: &str,
+    default_wd: &Option<String>,
+) -> Result<TaskDef, ConfigError> {
+    let command = t
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ConfigError::generic(format!(
+                "Task '{}' in {} must have a 'command' field",
+                label, config_path
+            ))
+        })?
+        .to_string();
+
+    let working_dir = match t.get("working_dir").and_then(|v| v.as_str()) {
+        Some(wd) => resolve_path(wd, config_dir),
+        None => default_wd.clone().ok_or_else(|| {
+            ConfigError::generic(format!(
+                "Task '{}' in {} must have a 'working_dir' field (no group-level working_dir set)",
+                label, config_path
+            ))
+        })?,
+    };
+
+    let mut env = load_level_env(t, config_dir)?;
+    let environment = if env.is_empty() {
+        None
+    } else {
+        Some(std::mem::take(&mut env))
+    };
+
+    Ok(TaskDef {
+        command,
+        working_dir: Some(working_dir),
+        environment,
+        env_file: None,
+        description: t
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    })
+}
+
+// ============================================================================
+// FILE PARSING → one level (props + units + child group bodies)
+// ============================================================================
+
+/// A single rig file parsed into one group's worth of props, units, and the
+/// raw bodies of any authored child `groups:` (built lazily against this file's
+/// own directory, preserving folder-aware relative paths).
+struct ParsedFile {
+    dir: String,
+    props: Props,
+    tasks: Vec<(String, TaskDef)>,
+    services: Vec<(String, ServiceDef)>,
+    child_groups: Vec<(String, serde_yaml::Value)>,
+}
+
+fn parse_file(path: &str) -> Result<ParsedFile, ConfigError> {
+    let config_dir = Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        ConfigError::generic(format!("Failed to read config file '{}': {}", path, e))
+    })?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|e| ConfigError::generic(format!("Invalid YAML in {}: {}", path, e)))?;
+    validate_config_schema(&yaml, path)?;
+
+    parse_level(&yaml, "", &config_dir, path)
+}
+
+/// Parse one level (root file body or an inline group body) into a ParsedFile.
+fn parse_level(
+    yaml: &serde_yaml::Value,
+    label: &str,
+    config_dir: &str,
+    config_path: &str,
+) -> Result<ParsedFile, ConfigError> {
+    let map = match yaml.as_mapping() {
+        Some(m) => m,
+        None => {
+            return Ok(ParsedFile {
+                dir: config_dir.to_string(),
+                props: Props::default(),
+                tasks: Vec::new(),
+                services: Vec::new(),
+                child_groups: Vec::new(),
             })
-            .collect();
-        let last = {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let cwd_str = cwd.to_string_lossy();
-            if abs_path.starts_with(cwd_str.as_ref()) {
-                format!("./{}", &abs_path[cwd_str.len()..].trim_start_matches('/'))
+        }
+    };
+
+    let working_dir = map
+        .get("working_dir")
+        .and_then(|v| v.as_str())
+        .map(|wd| resolve_path(wd, config_dir));
+
+    let env = load_level_env(map, config_dir)?;
+    let props = Props { working_dir, env };
+
+    let mut services = Vec::new();
+    if let Some(svcs) = map.get("services").and_then(|v| v.as_mapping()) {
+        for (svc_key, svc_val) in svcs {
+            let svc_name = svc_key.as_str().unwrap_or("?");
+            let s = svc_val.as_mapping().ok_or_else(|| {
+                ConfigError::generic(format!(
+                    "Service '{}' in {} must be a mapping",
+                    svc_name, config_path
+                ))
+            })?;
+            let lbl = if label.is_empty() {
+                svc_name.to_string()
             } else {
-                abs_path.clone()
-            }
-        };
-        cycle_parts.push(last);
-        return Err(ConfigError::generic(format!(
-            "Circular import detected:\n  {}",
-            cycle_parts.join("\n  → ")
-        )));
+                format!("{}.{}", label, svc_name)
+            };
+            let def = parse_service(&lbl, s, config_dir, config_path)?;
+            services.push((svc_name.to_string(), def));
+        }
     }
 
-    // Dedup check
-    if ctx.loaded.contains(&abs_path) {
-        return Ok(LoadResult {
-            groups: HashMap::new(),
-            seen_services: HashMap::new(),
-        });
+    let mut tasks = Vec::new();
+    if let Some(tsks) = map.get("tasks").and_then(|v| v.as_mapping()) {
+        for (tk, tv) in tsks {
+            let tname = tk.as_str().unwrap_or("?");
+            let t = tv.as_mapping().ok_or_else(|| {
+                ConfigError::generic(format!(
+                    "Task '{}' in {} must be a mapping",
+                    tname, config_path
+                ))
+            })?;
+            let lbl = if label.is_empty() {
+                tname.to_string()
+            } else {
+                format!("{}.{}", label, tname)
+            };
+            let def = parse_group_task(&lbl, t, config_dir, config_path, &props.working_dir)?;
+            tasks.push((tname.to_string(), def));
+        }
     }
-    ctx.loaded.insert(abs_path.clone());
 
-    // Read and parse YAML
-    let content = std::fs::read_to_string(config_path).map_err(|e| {
-        ConfigError::generic(format!(
-            "Failed to read config file '{}': {}",
-            config_path, e
-        ))
-    })?;
-
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&content)
-        .map_err(|e| ConfigError::generic(format!("Invalid YAML in {}: {}", config_path, e)))?;
-
-    // Schema validation
-    validate_config_schema(&yaml_value, config_path)?;
-
-    let raw: RawConfig = serde_yaml::from_value(yaml_value).map_err(|e| {
-        ConfigError::generic(format!("Failed to parse config {}: {}", config_path, e))
-    })?;
-
-    let mut groups: HashMap<String, GroupDef> = HashMap::new();
-    let mut seen_services: HashMap<String, String> = HashMap::new();
-
-    // Process groups
-    if let Some(raw_groups) = &raw.groups {
-        for (group_name, group_value) in raw_groups {
-            // Validate group name
-            if !group_name
+    let mut child_groups = Vec::new();
+    if let Some(groups) = map.get("groups").and_then(|v| v.as_mapping()) {
+        for (gk, gv) in groups {
+            let gname = gk.as_str().unwrap_or("?").to_string();
+            if !gname
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
             {
                 return Err(ConfigError::generic(format!(
                     "Invalid group name '{}' in {}: must be alphanumeric with hyphens/underscores only",
-                    group_name, config_path
+                    gname, config_path
                 )));
             }
-
-            let group_map = group_value.as_mapping().ok_or_else(|| {
-                ConfigError::generic(format!(
-                    "Group '{}' in {} must be a mapping",
-                    group_name, config_path
-                ))
-            })?;
-
-            // Parse group-level working_dir (default working dir for group-level tasks)
-            let group_working_dir = if let Some(wd_val) = group_map.get("working_dir") {
-                let wd_str = wd_val.as_str().ok_or_else(|| {
-                    ConfigError::generic(format!(
-                        "Group '{}' in {}: 'working_dir' must be a string",
-                        group_name, config_path
-                    ))
-                })?;
-                Some(resolve_path(wd_str, config_dir))
-            } else {
-                None
-            };
-
-            let has_services = group_map.get("services").is_some();
-            let has_tasks = group_map.get("tasks").is_some();
-
-            if !has_services && !has_tasks {
-                return Err(ConfigError::generic(format!(
-                    "Group '{}' in {} must have 'services' or 'tasks'",
-                    group_name, config_path
-                )));
-            }
-
-            let mut services_map: HashMap<String, ServiceDef> = HashMap::new();
-            let mut tasks_map: HashMap<String, TaskDef> = HashMap::new();
-
-            // Parse services
-            if let Some(services_val) = group_map.get("services") {
-                if let Some(services) = services_val.as_mapping() {
-                    for (svc_key, svc_val) in services {
-                        let svc_name = svc_key.as_str().unwrap_or("?");
-                        let s = svc_val.as_mapping().ok_or_else(|| {
-                            ConfigError::generic(format!(
-                                "Service '{}.{}' in {} must be a mapping",
-                                group_name, svc_name, config_path
-                            ))
-                        })?;
-
-                        // Required fields
-                        let command = s
-                            .get("command")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                ConfigError::generic(format!(
-                                    "Service '{}.{}' in {} must have a 'command' field",
-                                    group_name, svc_name, config_path
-                                ))
-                            })?
-                            .to_string();
-
-                        let working_dir_raw = s
-                            .get("working_dir")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                ConfigError::generic(format!(
-                                    "Service '{}.{}' in {} must have a 'working_dir' field",
-                                    group_name, svc_name, config_path
-                                ))
-                            })?;
-
-                        let working_dir = resolve_path(working_dir_raw, config_dir);
-
-                        // Optional environment
-                        let mut environment: Option<HashMap<String, String>> = None;
-                        if let Some(env_val) = s.get("environment") {
-                            if let Some(env_map) = env_val.as_mapping() {
-                                let map: HashMap<String, serde_yaml::Value> = env_map
-                                    .iter()
-                                    .filter_map(|(k, v)| {
-                                        k.as_str().map(|ks| (ks.to_string(), v.clone()))
-                                    })
-                                    .collect();
-                                environment = Some(normalize_env_values(&map));
-                            }
-                        }
-
-                        // env_file
-                        let mut env_file_entries = Vec::new();
-                        if let Some(ef_val) = s.get("env_file") {
-                            env_file_entries = resolve_env_file_spec(ef_val, config_dir);
-                        }
-
-                        // Load env files and merge
-                        if !env_file_entries.is_empty() {
-                            let env_from_files = load_env_files(&env_file_entries)?;
-                            let mut merged = env_from_files;
-                            if let Some(inline) = &environment {
-                                merged.extend(inline.clone());
-                            }
-                            environment = Some(merged);
-                        }
-
-                        // depends_on
-                        let depends_on = s.get("depends_on").and_then(|v| {
-                            v.as_sequence().map(|seq| {
-                                seq.iter()
-                                    .filter_map(|item| item.as_str().map(String::from))
-                                    .collect::<Vec<String>>()
-                            })
-                        });
-
-                        // healthcheck
-                        let healthcheck = s.get("healthcheck").and_then(|v| {
-                            v.as_mapping().map(|m| HealthCheck {
-                                grace_ms: m.get("grace_ms").and_then(|v| v.as_u64()),
-                            })
-                        });
-
-                        // color
-                        let color = s.get("color").and_then(|v| v.as_str()).map(String::from);
-
-                        // watch
-                        let watch = if let Some(watch_val) = s.get("watch") {
-                            if let Some(w) = watch_val.as_mapping() {
-                                let mut wd = WatchDef::default();
-                                if let Some(paths_val) = w.get("paths") {
-                                    if let Some(seq) = paths_val.as_sequence() {
-                                        wd.paths = Some(
-                                            seq.iter()
-                                                .filter_map(|p| {
-                                                    p.as_str()
-                                                        .map(|s| resolve_path(s, &working_dir))
-                                                })
-                                                .collect(),
-                                        );
-                                    }
-                                }
-                                if let Some(ext_val) = w.get("extensions") {
-                                    if let Some(seq) = ext_val.as_sequence() {
-                                        wd.extensions = Some(
-                                            seq.iter()
-                                                .filter_map(|e| e.as_str().map(String::from))
-                                                .collect(),
-                                        );
-                                    }
-                                }
-                                if let Some(pat_val) = w.get("patterns") {
-                                    if let Some(seq) = pat_val.as_sequence() {
-                                        wd.patterns = Some(
-                                            seq.iter()
-                                                .filter_map(|p| p.as_str().map(String::from))
-                                                .collect(),
-                                        );
-                                    }
-                                }
-                                if let Some(ign_val) = w.get("ignore") {
-                                    if let Some(seq) = ign_val.as_sequence() {
-                                        wd.ignore = Some(
-                                            seq.iter()
-                                                .filter_map(|i| i.as_str().map(String::from))
-                                                .collect(),
-                                        );
-                                    }
-                                }
-                                if let Some(deb_val) = w.get("debounce") {
-                                    wd.debounce =
-                                        Some(deb_val.as_str().map(String::from).unwrap_or_else(
-                                            || format!("{}", deb_val.as_u64().unwrap_or(0)),
-                                        ));
-                                }
-                                Some(wd)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        // requirements
-                        let requirements = if let Some(req_val) = s.get("requirements") {
-                            if let Some(seq) = req_val.as_sequence() {
-                                let mut reqs = Vec::new();
-                                for entry in seq {
-                                    let m = entry.as_mapping().ok_or_else(|| {
-                                        ConfigError::generic(format!(
-                                            "Invalid requirement entry in service '{}.{}' ({}): must be an object with 'check' and 'command'",
-                                            group_name, svc_name, config_path
-                                        ))
-                                    })?;
-                                    let check = m.get("check").and_then(|v| v.as_str()).ok_or_else(|| {
-                                        ConfigError::generic(format!(
-                                            "Requirement in service '{}.{}' ({}) must have a 'check' string",
-                                            group_name, svc_name, config_path
-                                        ))
-                                    })?.to_string();
-                                    let cmd = m.get("command").and_then(|v| v.as_str()).ok_or_else(|| {
-                                        ConfigError::generic(format!(
-                                            "Requirement in service '{}.{}' ({}) must have a 'command' string",
-                                            group_name, svc_name, config_path
-                                        ))
-                                    })?.to_string();
-                                    reqs.push(RequirementDef {
-                                        check,
-                                        command: cmd,
-                                    });
-                                }
-                                Some(reqs)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        // Service-level tasks
-                        let svc_tasks = if let Some(tasks_val) = s.get("tasks") {
-                            if let Some(tasks) = tasks_val.as_mapping() {
-                                let mut tm = HashMap::new();
-                                for (tk, tv) in tasks {
-                                    let tname = tk.as_str().unwrap_or("?");
-                                    let t = tv.as_mapping().ok_or_else(|| {
-                                        ConfigError::generic(format!(
-                                            "Task '{}.{}.{}' in {} must be a mapping",
-                                            group_name, svc_name, tname, config_path
-                                        ))
-                                    })?;
-
-                                    let tcmd = t
-                                        .get("command")
-                                        .and_then(|v| v.as_str())
-                                        .ok_or_else(|| {
-                                            ConfigError::generic(format!(
-                                                "Task '{}.{}.{}' in {} must have a 'command' field",
-                                                group_name, svc_name, tname, config_path
-                                            ))
-                                        })?
-                                        .to_string();
-
-                                    let twd = t
-                                        .get("working_dir")
-                                        .and_then(|v| v.as_str())
-                                        .map(|wd| resolve_path(wd, config_dir));
-
-                                    let mut tenv: Option<HashMap<String, String>> = None;
-                                    if let Some(env_val) = t.get("environment") {
-                                        if let Some(env_map) = env_val.as_mapping() {
-                                            let map: HashMap<String, serde_yaml::Value> = env_map
-                                                .iter()
-                                                .filter_map(|(k, v)| {
-                                                    k.as_str().map(|ks| (ks.to_string(), v.clone()))
-                                                })
-                                                .collect();
-                                            tenv = Some(normalize_env_values(&map));
-                                        }
-                                    }
-
-                                    // env_file for task
-                                    if let Some(ef_val) = t.get("env_file") {
-                                        let ef_entries = resolve_env_file_spec(ef_val, config_dir);
-                                        if !ef_entries.is_empty() {
-                                            let env_from_files = load_env_files(&ef_entries)?;
-                                            let mut merged = env_from_files;
-                                            if let Some(inline) = &tenv {
-                                                merged.extend(inline.clone());
-                                            }
-                                            tenv = Some(merged);
-                                        }
-                                    }
-
-                                    let tdesc = t
-                                        .get("description")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
-
-                                    tm.insert(
-                                        tname.to_string(),
-                                        TaskDef {
-                                            command: tcmd,
-                                            working_dir: twd,
-                                            environment: tenv,
-                                            env_file: None, // already processed
-                                            description: tdesc,
-                                        },
-                                    );
-                                }
-                                Some(tm)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        services_map.insert(
-                            svc_name.to_string(),
-                            ServiceDef {
-                                command,
-                                working_dir,
-                                environment,
-                                env_file: None, // already processed
-                                color,
-                                depends_on,
-                                healthcheck,
-                                tasks: svc_tasks,
-                                watch,
-                                requirements,
-                            },
-                        );
-
-                        seen_services.insert(svc_name.to_string(), group_name.clone());
-                    }
-                }
-            }
-
-            // Parse group-level tasks
-            if let Some(tasks_val) = group_map.get("tasks") {
-                if let Some(tasks) = tasks_val.as_mapping() {
-                    for (tk, tv) in tasks {
-                        let tname = tk.as_str().unwrap_or("?");
-                        let t = tv.as_mapping().ok_or_else(|| {
-                            ConfigError::generic(format!(
-                                "Task '{}.{}' in {} must be a mapping",
-                                group_name, tname, config_path
-                            ))
-                        })?;
-
-                        let tcmd = t
-                            .get("command")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                ConfigError::generic(format!(
-                                    "Task '{}.{}' in {} must have a 'command' field",
-                                    group_name, tname, config_path
-                                ))
-                            })?
-                            .to_string();
-
-                        let twd = match t.get("working_dir").and_then(|v| v.as_str()) {
-                            Some(wd) => resolve_path(wd, config_dir),
-                            None => group_working_dir.clone().ok_or_else(|| {
-                                ConfigError::generic(format!(
-                                    "Task '{}.{}' in {} must have a 'working_dir' field (no group-level working_dir set)",
-                                    group_name, tname, config_path
-                                ))
-                            })?,
-                        };
-
-                        let mut tenv: Option<HashMap<String, String>> = None;
-                        if let Some(env_val) = t.get("environment") {
-                            if let Some(env_map) = env_val.as_mapping() {
-                                let map: HashMap<String, serde_yaml::Value> = env_map
-                                    .iter()
-                                    .filter_map(|(k, v)| {
-                                        k.as_str().map(|ks| (ks.to_string(), v.clone()))
-                                    })
-                                    .collect();
-                                tenv = Some(normalize_env_values(&map));
-                            }
-                        }
-
-                        if let Some(ef_val) = t.get("env_file") {
-                            let ef_entries = resolve_env_file_spec(ef_val, config_dir);
-                            if !ef_entries.is_empty() {
-                                let env_from_files = load_env_files(&ef_entries)?;
-                                let mut merged = env_from_files;
-                                if let Some(inline) = &tenv {
-                                    merged.extend(inline.clone());
-                                }
-                                tenv = Some(merged);
-                            }
-                        }
-
-                        let tdesc = t
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-
-                        tasks_map.insert(
-                            tname.to_string(),
-                            TaskDef {
-                                command: tcmd,
-                                working_dir: Some(twd),
-                                environment: tenv,
-                                env_file: None,
-                                description: tdesc,
-                            },
-                        );
-                    }
-                }
-            }
-
-            groups.insert(
-                group_name.clone(),
-                GroupDef {
-                    working_dir: group_working_dir,
-                    services: if services_map.is_empty() {
-                        None
-                    } else {
-                        Some(services_map)
-                    },
-                    tasks: if tasks_map.is_empty() {
-                        None
-                    } else {
-                        Some(tasks_map)
-                    },
-                },
-            );
+            child_groups.push((gname, gv.clone()));
         }
     }
 
-    // Process imports
-    if let Some(imports) = &raw.imports {
-        for import_path in imports {
-            let abs_import = resolve_path(import_path, config_dir);
-
-            // Check if import exists
-            if !Path::new(&abs_import).exists() {
-                return Err(ConfigError::generic(format!(
-                    "Import not found: {}\n  in {}",
-                    import_path, config_path
-                )));
-            }
-
-            let child_dir = Path::new(&abs_import)
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| ".".to_string());
-
-            ctx.import_chain.push(abs_path.clone());
-            let child_result = load_config_recursive(&abs_import, &child_dir, ctx)?;
-            ctx.import_chain.pop();
-
-            // Merge child groups
-            for (group_name, group_def) in child_result.groups {
-                if groups.contains_key(&group_name) {
-                    return Err(ConfigError::generic(format!(
-                        "Duplicate group '{}' defined in:\n  - {}\n  - {}",
-                        group_name, config_path, abs_import
-                    )));
-                }
-                groups.insert(group_name, group_def);
-            }
-
-            // Merge child services
-            for (service_name, group_name) in child_result.seen_services {
-                if let Some(existing_group) = seen_services.get(&service_name) {
-                    return Err(ConfigError::generic(format!(
-                        "Duplicate service '{}' found in:\n  - group '{}'\n  - group '{}' in {}",
-                        service_name, existing_group, group_name, abs_import
-                    )));
-                }
-                seen_services.insert(service_name, group_name);
-            }
-        }
-    }
-
-    Ok(LoadResult {
-        groups,
-        seen_services,
+    Ok(ParsedFile {
+        dir: config_dir.to_string(),
+        props,
+        tasks,
+        services,
+        child_groups,
     })
 }
 
-/// Load the full config tree starting from a root config file.
-fn load_config_tree(root_path: &str) -> Result<(Config, String), ConfigError> {
-    let abs_path = if root_path.starts_with('/') {
-        root_path.to_string()
+// ============================================================================
+// TREE BUILDING
+// ============================================================================
+
+/// Pick the config file directly inside `dir` (rig.yaml > rig.yml > *.rig.yaml).
+fn pick_config_in_dir(dir: &str) -> Option<PathBuf> {
+    for name in CONFIG_NAMES {
+        let p = Path::new(dir).join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let mut star: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with(".rig.yaml") && n != "rig.yaml"
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+    star.sort();
+    star.into_iter().next()
+}
+
+/// Every rig config file under `dir` (gitignore-aware, hidden dirs skipped).
+fn scan_rig_files(dir: &str) -> Vec<PathBuf> {
+    crate::commands::walk_ignored_files(dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .map(|n| is_rig_file_name(&n.to_string_lossy()))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Build a group backed by a directory: its own rig file (bare units + authored
+/// child groups + props) plus folder-auto child groups for subdirs that hold a
+/// rig file and aren't already adopted by an authored `dir:`/`paths:` group.
+fn build_dir_group(
+    name: &str,
+    dir: &str,
+    visited: &mut HashSet<String>,
+) -> Result<Group, ConfigError> {
+    let dir_norm = normalize_path(dir);
+    if !visited.insert(dir_norm.clone()) {
+        return Ok(Group::empty(name, Some(PathBuf::from(&dir_norm))));
+    }
+
+    let mut group = Group::empty(name, Some(PathBuf::from(&dir_norm)));
+    let mut adopted_dirs: HashSet<String> = HashSet::new();
+    let mut adopted_files: HashSet<String> = HashSet::new();
+
+    if let Some(file) = pick_config_in_dir(&dir_norm) {
+        let file_str = file.to_string_lossy().to_string();
+        adopted_files.insert(normalize_path(&file_str));
+        let parsed = parse_file(&file_str)?;
+        group.props = parsed.props;
+        group.tasks = parsed.tasks;
+        group.services = parsed.services;
+        for (cname, cbody) in parsed.child_groups {
+            let child = build_child_group(
+                &cname,
+                &cbody,
+                &parsed.dir,
+                &mut adopted_dirs,
+                &mut adopted_files,
+                visited,
+            )?;
+            group.groups.push(child);
+        }
+    }
+
+    // Folder-auto child groups: immediate subdirs holding a non-adopted rig file.
+    let files = scan_rig_files(&dir_norm);
+    let mut subdirs: BTreeSet<String> = BTreeSet::new();
+    for f in &files {
+        let f_norm = normalize_path(&f.to_string_lossy());
+        if adopted_files.contains(&f_norm) {
+            continue;
+        }
+        let rel = match Path::new(&f_norm).strip_prefix(&dir_norm) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut comps = rel.components();
+        let first = match comps.next() {
+            Some(c) => c.as_os_str().to_string_lossy().to_string(),
+            None => continue,
+        };
+        // File directly in `dir` (no subdir component) is a sibling, not a child.
+        if comps.next().is_none() {
+            continue;
+        }
+        subdirs.insert(first);
+    }
+
+    for seg in subdirs {
+        let sub = normalize_path(&format!("{}/{}", dir_norm, seg));
+        if adopted_dirs.contains(&sub) {
+            continue;
+        }
+        if group.groups.iter().any(|c| c.name == seg) {
+            continue; // authored group of the same segment wins
+        }
+        group.groups.push(build_dir_group(&seg, &sub, visited)?);
+    }
+
+    Ok(group)
+}
+
+/// Build an authored child group from its inline body. `dir:` recurses into a
+/// directory; `paths:` pulls explicit files; inline units/props apply on top.
+fn build_child_group(
+    name: &str,
+    body: &serde_yaml::Value,
+    parent_dir: &str,
+    adopted_dirs: &mut HashSet<String>,
+    adopted_files: &mut HashSet<String>,
+    visited: &mut HashSet<String>,
+) -> Result<Group, ConfigError> {
+    // A group body may point at a directory. Build that first, then overlay.
+    let dir_ref = body
+        .as_mapping()
+        .and_then(|m| m.get("dir"))
+        .and_then(|v| v.as_str());
+
+    let mut group = if let Some(d) = dir_ref {
+        let cd = resolve_path(d, parent_dir);
+        adopted_dirs.insert(cd.clone());
+        let mut g = build_dir_group(name, &cd, visited)?;
+        g.dir = Some(PathBuf::from(&cd));
+        g
     } else {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        format!("{}/{}", cwd.display(), root_path)
-    };
-    let abs_path = normalize_path(&abs_path);
-    let config_dir = Path::new(&abs_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-
-    let mut ctx = LoadContext {
-        loaded: HashSet::new(),
-        import_chain: Vec::new(),
+        Group::empty(name, None)
     };
 
-    let result = load_config_recursive(&abs_path, &config_dir, &mut ctx)?;
+    // Inline body (props / units / paths / nested groups) resolved relative to
+    // the declaring file's directory, overlaid on top of any `dir:` content.
+    let parsed = parse_level(body, name, parent_dir, parent_dir)?;
+    if parsed.props.working_dir.is_some() {
+        group.props.working_dir = parsed.props.working_dir;
+    }
+    group.props.env.extend(parsed.props.env);
+    group.tasks.extend(parsed.tasks);
+    group.services.extend(parsed.services);
 
-    // Validate depends_on references
-    for (group_name, group_def) in &result.groups {
-        if let Some(services) = &group_def.services {
-            for (svc_name, svc_def) in services {
-                if let Some(deps) = &svc_def.depends_on {
-                    for dep in deps {
-                        if !result.seen_services.contains_key(dep) {
-                            return Err(ConfigError::generic(format!(
-                                "Service '{}.{}' depends on unknown service '{}'",
-                                group_name, svc_name, dep
-                            )));
-                        }
+    // Explicit `paths:` files pulled into this group.
+    if let Some(paths) = body
+        .as_mapping()
+        .and_then(|m| m.get("paths"))
+        .and_then(|v| v.as_sequence())
+    {
+        let mut path_bufs = Vec::new();
+        for p in paths {
+            let ps = match p.as_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            let pf = resolve_path(ps, parent_dir);
+            adopted_files.insert(pf.clone());
+            path_bufs.push(PathBuf::from(&pf));
+            let pparsed = parse_file(&pf)?;
+            group.props.env.extend(pparsed.props.env);
+            group.tasks.extend(pparsed.tasks);
+            group.services.extend(pparsed.services);
+            for (cname, cbody) in pparsed.child_groups {
+                let child = build_child_group(
+                    &cname,
+                    &cbody,
+                    &pparsed.dir,
+                    adopted_dirs,
+                    adopted_files,
+                    visited,
+                )?;
+                group.groups.push(child);
+            }
+        }
+        group.paths = Some(path_bufs);
+    }
+
+    // Nested authored `groups:` in the inline body.
+    for (cname, cbody) in parsed.child_groups {
+        if group.groups.iter().any(|c| c.name == cname) {
+            continue;
+        }
+        let child = build_child_group(
+            &cname,
+            &cbody,
+            parent_dir,
+            adopted_dirs,
+            adopted_files,
+            visited,
+        )?;
+        group.groups.push(child);
+    }
+
+    Ok(group)
+}
+
+/// Validate every service's `depends_on` against the set of known service names.
+fn validate_depends_on(root: &Group) -> Result<(), ConfigError> {
+    let mut names: HashSet<String> = HashSet::new();
+    collect_service_names(root, &mut names);
+
+    fn walk(g: &Group, prefix: &str, names: &HashSet<String>) -> Result<(), ConfigError> {
+        for (sname, sdef) in &g.services {
+            if let Some(deps) = &sdef.depends_on {
+                for dep in deps {
+                    if !names.contains(dep) {
+                        return Err(ConfigError::generic(format!(
+                            "Service '{}' depends on unknown service '{}'",
+                            join_path(prefix, sname),
+                            dep
+                        )));
                     }
                 }
             }
         }
+        for child in &g.groups {
+            walk(child, &join_path(prefix, &child.name), names)?;
+        }
+        Ok(())
+    }
+    walk(root, "", &names)
+}
+
+fn collect_service_names(g: &Group, out: &mut HashSet<String>) {
+    for (sname, _) in &g.services {
+        out.insert(sname.clone());
+    }
+    for child in &g.groups {
+        collect_service_names(child, out);
+    }
+}
+
+// ============================================================================
+// CONFIG LOADING
+// ============================================================================
+
+/// Build the group tree rooted at `config_path`'s directory (or CWD). Returns
+/// `Ok(None)` when no rig config exists anywhere under the root (make-only is
+/// still valid); a malformed config still fails loudly.
+pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, String)>, ConfigError> {
+    let base = match config_path {
+        Some(p) => Path::new(p)
+            .parent()
+            .map(|d| d.to_string_lossy().to_string())
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| ".".to_string()),
+        None => std::env::current_dir()
+            .map_err(|e| ConfigError::generic(format!("Failed to get current directory: {}", e)))?
+            .to_string_lossy()
+            .to_string(),
+    };
+    let base = normalize_path(&base);
+
+    if scan_rig_files(&base).is_empty() {
+        return Ok(None);
     }
 
-    Ok((
-        Config {
-            groups: result.groups,
-        },
-        config_dir,
-    ))
+    log_verbose(&format!("config_root={}", base));
+    let mut visited = HashSet::new();
+    let root = build_dir_group("", &base, &mut visited)?;
+    validate_depends_on(&root)?;
+    Ok(Some((root, base)))
 }
 
-/// Load config from a path. If no path, searches upward from CWD. Returns
-/// `Ok(None)` when no config is found (auto-search only); a real parse error
-/// while loading a located config still fails loudly.
-pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Config, String)>, ConfigError> {
-    let path = match config_path {
-        Some(p) => PathBuf::from(p),
-        None => {
-            let cwd = std::env::current_dir().map_err(|e| {
-                ConfigError::generic(format!("Failed to get current directory: {}", e))
-            })?;
-            match find_nearest_config(&cwd) {
-                Ok(p) => p,
-                Err(_) => return Ok(None),
-            }
-        }
-    };
-    let path_str = path.to_string_lossy().to_string();
-    log_verbose(&format!("config={}", path_str));
-    load_config_tree(&path_str).map(Some)
-}
-
-/// Load config from a path. If no path, searches upward from CWD.
-pub fn load_config(config_path: Option<&str>) -> Result<(Config, String), ConfigError> {
+/// Build the group tree; error if no rig config is found.
+pub fn load_config(config_path: Option<&str>) -> Result<(Group, String), ConfigError> {
     try_load_config(config_path)?.ok_or_else(|| {
         ConfigError::generic(
-            "No rig config found (searched up to filesystem root). Expected: rig.yaml, rig.yml, or *.rig.yaml",
+            "No rig config found. Expected rig.yaml, rig.yml, or *.rig.yaml under the current directory.",
         )
     })
+}
+
+// ============================================================================
+// ENV CASCADE + FLATTENING
+// ============================================================================
+
+fn join_path(prefix: &str, seg: &str) -> String {
+    if prefix.is_empty() {
+        seg.to_string()
+    } else {
+        format!("{}.{}", prefix, seg)
+    }
+}
+
+/// Fold a unit's own env under the ancestor chain (root-first). Ancestors
+/// override the unit; nearer-to-root overrides nearer-to-unit (control from
+/// above).
+fn cascade_env(
+    base: HashMap<String, String>,
+    chain: &[&HashMap<String, String>],
+) -> HashMap<String, String> {
+    let mut eff = base;
+    for env in chain.iter().rev() {
+        for (k, v) in env.iter() {
+            eff.insert(k.clone(), v.clone());
+        }
+    }
+    eff
+}
+
+/// All services as a flat, sorted vector with dotted-path groups and the
+/// ancestor-wins env cascade baked into each `def.environment`.
+pub fn get_all_services(root: &Group) -> Vec<ResolvedService> {
+    let mut out = Vec::new();
+    collect_services(root, "", &mut Vec::new(), &mut out);
+    out
+}
+
+fn collect_services<'a>(
+    g: &'a Group,
+    prefix: &str,
+    chain: &mut Vec<&'a HashMap<String, String>>,
+    out: &mut Vec<ResolvedService>,
+) {
+    chain.push(&g.props.env);
+
+    let mut svcs: Vec<&(String, ServiceDef)> = g.services.iter().collect();
+    svcs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (sname, sdef) in svcs {
+        let base = sdef.environment.clone().unwrap_or_default();
+        let eff = cascade_env(base, chain);
+        let mut def = sdef.clone();
+        def.environment = if eff.is_empty() { None } else { Some(eff) };
+        out.push(ResolvedService {
+            group: prefix.to_string(),
+            name: sname.clone(),
+            def,
+        });
+    }
+
+    let mut children: Vec<&Group> = g.groups.iter().collect();
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    for child in children {
+        collect_services(child, &join_path(prefix, &child.name), chain, out);
+    }
+
+    chain.pop();
+}
+
+/// All tasks as a flat, sorted vector with dotted paths and cascaded env.
+pub fn get_all_tasks(root: &Group) -> Vec<ResolvedTask> {
+    let mut out = Vec::new();
+    collect_tasks(root, "", &mut Vec::new(), &mut out);
+    out
+}
+
+fn collect_tasks<'a>(
+    g: &'a Group,
+    prefix: &str,
+    chain: &mut Vec<&'a HashMap<String, String>>,
+    out: &mut Vec<ResolvedTask>,
+) {
+    chain.push(&g.props.env);
+
+    // Group-level tasks.
+    let mut tasks: Vec<&(String, TaskDef)> = g.tasks.iter().collect();
+    tasks.sort_by(|a, b| a.0.cmp(&b.0));
+    for (tname, tdef) in tasks {
+        let base = tdef.environment.clone().unwrap_or_default();
+        let eff = cascade_env(base, chain);
+        out.push(ResolvedTask {
+            path: join_path(prefix, tname),
+            group: prefix.to_string(),
+            service: None,
+            name: tname.clone(),
+            command: tdef.command.clone(),
+            working_dir: tdef.working_dir.clone().unwrap_or_default(),
+            environment: if eff.is_empty() { None } else { Some(eff) },
+            description: tdef.description.clone(),
+        });
+    }
+
+    // Service-level tasks (service env merged first, task overrides; then cascade).
+    let mut svcs: Vec<&(String, ServiceDef)> = g.services.iter().collect();
+    svcs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (sname, sdef) in svcs {
+        if let Some(svc_tasks) = &sdef.tasks {
+            let mut st: Vec<(&String, &TaskDef)> = svc_tasks.iter().collect();
+            st.sort_by(|a, b| a.0.cmp(b.0));
+            for (tname, tdef) in st {
+                let mut base = sdef.environment.clone().unwrap_or_default();
+                if let Some(te) = &tdef.environment {
+                    base.extend(te.clone());
+                }
+                let eff = cascade_env(base, chain);
+                out.push(ResolvedTask {
+                    path: format!("{}.{}", join_path(prefix, sname), tname),
+                    group: prefix.to_string(),
+                    service: Some(sname.clone()),
+                    name: tname.clone(),
+                    command: tdef.command.clone(),
+                    working_dir: tdef
+                        .working_dir
+                        .clone()
+                        .unwrap_or_else(|| sdef.working_dir.clone()),
+                    environment: if eff.is_empty() { None } else { Some(eff) },
+                    description: tdef.description.clone(),
+                });
+            }
+        }
+    }
+
+    let mut children: Vec<&Group> = g.groups.iter().collect();
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    for child in children {
+        collect_tasks(child, &join_path(prefix, &child.name), chain, out);
+    }
+
+    chain.pop();
+}
+
+/// Set of every group's dotted path (excluding the root `""`).
+fn collect_group_paths(root: &Group) -> HashSet<String> {
+    let mut out = HashSet::new();
+    fn walk(g: &Group, prefix: &str, out: &mut HashSet<String>) {
+        for child in &g.groups {
+            let p = join_path(prefix, &child.name);
+            out.insert(p.clone());
+            walk(child, &p, out);
+        }
+    }
+    walk(root, "", &mut out);
+    out
 }
 
 // ============================================================================
 // CONFIG QUERYING
 // ============================================================================
 
-/// Build a flat lookup map from service name to its group and definition.
-pub fn build_service_lookup(config: &Config) -> HashMap<String, ResolvedService> {
-    let mut lookup = HashMap::new();
-    for (group_name, group_def) in &config.groups {
-        if let Some(services) = &group_def.services {
-            for (svc_name, svc_def) in services {
-                lookup.insert(
-                    svc_name.clone(),
-                    ResolvedService {
-                        group: group_name.clone(),
-                        name: svc_name.clone(),
-                        def: svc_def.clone(),
-                    },
-                );
-            }
-        }
-    }
-    lookup
+/// Flat lookup from bare service name to its resolved form (last one wins on a
+/// name collision across groups).
+pub fn build_service_lookup(root: &Group) -> HashMap<String, ResolvedService> {
+    get_all_services(root)
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect()
 }
 
-/// Get all services from config as a flat vector.
-pub fn get_all_services(config: &Config) -> Vec<ResolvedService> {
-    let mut services = Vec::new();
-    let mut groups: Vec<_> = config.groups.iter().collect();
-    groups.sort_by_key(|(name, _)| *name);
-    for (group_name, group_def) in groups {
-        if let Some(svcs) = &group_def.services {
-            let mut svc_names: Vec<_> = svcs.iter().collect();
-            svc_names.sort_by_key(|(name, _)| *name);
-            for (svc_name, svc_def) in svc_names {
-                services.push(ResolvedService {
-                    group: group_name.clone(),
-                    name: svc_name.clone(),
-                    def: svc_def.clone(),
-                });
-            }
-        }
-    }
-    services
-}
+/// Resolve a task path (`task`, `group.task`, or `group.service.task`).
+pub fn resolve_task(path: &str, root: &Group) -> Result<ResolvedTask, ConfigError> {
+    let all = get_all_tasks(root);
 
-/// Get all tasks from config as a flat vector.
-pub fn get_all_tasks(config: &Config) -> Vec<ResolvedTask> {
-    let mut tasks = Vec::new();
-
-    let mut groups: Vec<_> = config.groups.iter().collect();
-    groups.sort_by_key(|(name, _)| *name);
-
-    for (group_name, group_def) in groups {
-        // Group-level tasks
-        if let Some(group_tasks) = &group_def.tasks {
-            let mut task_names: Vec<_> = group_tasks.iter().collect();
-            task_names.sort_by_key(|(name, _)| *name);
-            for (task_name, task_def) in task_names {
-                tasks.push(ResolvedTask {
-                    path: format!("{}.{}", group_name, task_name),
-                    group: group_name.clone(),
-                    service: None,
-                    name: task_name.clone(),
-                    command: task_def.command.clone(),
-                    working_dir: task_def.working_dir.clone().unwrap_or_default(),
-                    environment: task_def.environment.clone(),
-                    description: task_def.description.clone(),
-                });
-            }
-        }
-
-        // Service-level tasks
-        if let Some(services) = &group_def.services {
-            let mut svc_names: Vec<_> = services.iter().collect();
-            svc_names.sort_by_key(|(name, _)| *name);
-            for (svc_name, svc_def) in svc_names {
-                if let Some(svc_tasks) = &svc_def.tasks {
-                    let mut task_names: Vec<_> = svc_tasks.iter().collect();
-                    task_names.sort_by_key(|(name, _)| *name);
-                    for (task_name, task_def) in task_names {
-                        // Merge environment: service env -> task env (task overrides)
-                        let merged_env = if task_def.environment.is_some() {
-                            let mut env = svc_def.environment.clone().unwrap_or_default();
-                            env.extend(task_def.environment.clone().unwrap_or_default());
-                            Some(env)
-                        } else {
-                            svc_def.environment.clone()
-                        };
-
-                        tasks.push(ResolvedTask {
-                            path: format!("{}.{}.{}", group_name, svc_name, task_name),
-                            group: group_name.clone(),
-                            service: Some(svc_name.clone()),
-                            name: task_name.clone(),
-                            command: task_def.command.clone(),
-                            working_dir: task_def
-                                .working_dir
-                                .clone()
-                                .unwrap_or_else(|| svc_def.working_dir.clone()),
-                            environment: merged_env,
-                            description: task_def.description.clone(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    tasks
-}
-
-/// Resolve a task path (e.g., "backend.deploy" or "backend.api.build") to a ResolvedTask.
-pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigError> {
-    let parts: Vec<&str> = path.split('.').collect();
-
-    if parts.len() == 1 {
-        // Short name: resolve if unambiguous
-        let all = get_all_tasks(config);
+    if !path.contains('.') {
         let matches: Vec<_> = all.into_iter().filter(|t| t.name == path).collect();
         return match matches.len() {
             0 => Err(ConfigError::generic(format!("Unknown task '{}'", path))),
             1 => Ok(matches.into_iter().next().unwrap()),
             _ => {
-                let paths: Vec<_> = matches.iter().map(|t| t.path.as_str()).collect();
+                let mut paths: Vec<_> = matches.iter().map(|t| t.path.clone()).collect();
+                paths.sort();
                 Err(ConfigError::generic(format!(
                     "Ambiguous task '{}'. Matches: {}",
                     path,
@@ -1332,106 +1446,40 @@ pub fn resolve_task(path: &str, config: &Config) -> Result<ResolvedTask, ConfigE
         };
     }
 
-    if parts.len() > 3 {
-        return Err(ConfigError::generic(format!(
-            "Invalid task path '{}'. Use 'group.task' or 'group.service.task'",
-            path
-        )));
+    if let Some(t) = all.into_iter().find(|t| t.path == path) {
+        return Ok(t);
     }
 
-    let group_name = parts[0];
-    let group_def = config
-        .groups
-        .get(group_name)
-        .ok_or_else(|| ConfigError::generic(format!("Unknown group '{}'", group_name)))?;
-
-    if parts.len() == 2 {
-        let task_name = parts[1];
-        if let Some(tasks) = &group_def.tasks {
-            if let Some(task_def) = tasks.get(task_name) {
-                return Ok(ResolvedTask {
-                    path: path.to_string(),
-                    group: group_name.to_string(),
-                    service: None,
-                    name: task_name.to_string(),
-                    command: task_def.command.clone(),
-                    working_dir: task_def.working_dir.clone().unwrap_or_default(),
-                    environment: task_def.environment.clone(),
-                    description: task_def.description.clone(),
-                });
-            }
-        }
-        return Err(ConfigError::generic(format!(
-            "Unknown task '{}'. Did you mean 'group.service.task'?",
-            path
-        )));
+    // No exact match — distinguish an unknown top-level group from a missing task.
+    let first = path.split('.').next().unwrap_or("");
+    if !root.groups.iter().any(|c| c.name == first) {
+        return Err(ConfigError::generic(format!("Unknown group '{}'", first)));
     }
-
-    // parts.len() == 3: group.service.task
-    let svc_name = parts[1];
-    let task_name = parts[2];
-
-    let svc_def = group_def
-        .services
-        .as_ref()
-        .and_then(|svcs| svcs.get(svc_name))
-        .ok_or_else(|| {
-            ConfigError::generic(format!("Unknown service '{}.{}'", group_name, svc_name))
-        })?;
-
-    let task_def = svc_def
-        .tasks
-        .as_ref()
-        .and_then(|tasks| tasks.get(task_name))
-        .ok_or_else(|| ConfigError::generic(format!("Unknown task '{}'", path)))?;
-
-    // Merge service env -> task env
-    let merged_env = if task_def.environment.is_some() {
-        let mut env = svc_def.environment.clone().unwrap_or_default();
-        env.extend(task_def.environment.clone().unwrap_or_default());
-        Some(env)
-    } else {
-        svc_def.environment.clone()
-    };
-
-    Ok(ResolvedTask {
-        path: path.to_string(),
-        group: group_name.to_string(),
-        service: Some(svc_name.to_string()),
-        name: task_name.to_string(),
-        command: task_def.command.clone(),
-        working_dir: task_def
-            .working_dir
-            .clone()
-            .unwrap_or_else(|| svc_def.working_dir.clone()),
-        environment: merged_env,
-        description: task_def.description.clone(),
-    })
+    Err(ConfigError::generic(format!(
+        "Unknown task '{}'. Did you mean 'group.service.task'?",
+        path
+    )))
 }
 
-/// Resolve CLI targets to a list of services.
+/// Resolve CLI targets (group filters, then explicit service names, then all).
 pub fn resolve_targets(
-    config: &Config,
+    root: &Group,
     lookup: &HashMap<String, ResolvedService>,
     service_names: &[String],
     group_names: &[String],
 ) -> Result<Vec<ResolvedService>, ConfigError> {
     if !group_names.is_empty() {
+        let known = collect_group_paths(root);
+        let all = get_all_services(root);
         let mut services = Vec::new();
         for group_name in group_names {
-            let group_def = config
-                .groups
-                .get(group_name)
-                .ok_or_else(|| ConfigError::generic(format!("Unknown group: {}", group_name)))?;
-            if let Some(svcs) = &group_def.services {
-                for (svc_name, svc_def) in svcs {
-                    services.push(ResolvedService {
-                        group: group_name.clone(),
-                        name: svc_name.clone(),
-                        def: svc_def.clone(),
-                    });
-                }
+            if !known.contains(group_name) {
+                return Err(ConfigError::generic(format!(
+                    "Unknown group: {}",
+                    group_name
+                )));
             }
+            services.extend(all.iter().filter(|s| &s.group == group_name).cloned());
         }
         return Ok(services);
     }
@@ -1447,6 +1495,5 @@ pub fn resolve_targets(
         return Ok(services);
     }
 
-    // No args — return all services
-    Ok(get_all_services(config))
+    Ok(get_all_services(root))
 }

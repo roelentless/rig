@@ -34,9 +34,6 @@ TASKS:
   run/task <task...> [-- args...]  Run task(s) (group.name or group.service.name)
     -p, --parallel                 Run tasks in parallel
 
-MULTI-FILE:
-  discover [--dry-run] [--yes] [path]  Scan for rig files and update imports
-
 OTHER:
   version                   Show version
   help                      Show this help
@@ -64,19 +61,12 @@ EXAMPLES:
   rig run api.test web.test Run multiple tasks sequentially
   rig run api.test web.test -p  Run tasks in parallel
   rig config --json         Show raw JSON config
-  rig discover              Scan for rig files and update imports
-  rig discover --dry-run    Show what would be imported
 
 CONFIG:
-  Searches upward from current directory for rig.yaml, rig.yml, or *.rig.yaml.
-  Supports imports to compose configs from multiple files:
-
-    imports:
-      - db/rig.yaml
-      - backend/rig.yaml
-
-  All imported files are merged into a flat namespace. Service names must be
-  unique across all files. Circular imports are detected and reported.
+  Discovers rig.yaml, rig.yml, or *.rig.yaml downward from the current
+  directory (gitignore-aware). Each subfolder with a rig file becomes a child
+  group named by its folder; authored `groups:` with `dir:`/`paths:` reshape or
+  rename. Properties (environment, env_file, working_dir) cascade ancestor-wins.
 "#;
 
 #[derive(Parser)]
@@ -206,15 +196,6 @@ enum Commands {
         #[arg(last = true)]
         pass_args: Vec<String>,
     },
-
-    // Discovery
-    Discover {
-        path: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
 }
 
 /// Split comma-separated service names: ["api,worker", "db"] -> ["api", "worker", "db"]
@@ -316,19 +297,6 @@ async fn main() {
             process::exit(code);
         }
 
-        // Discovery
-        Commands::Discover { path, dry_run, yes } => {
-            let dir = path.unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-            if let Err(e) = cmd_discover(&dir, dry_run, yes).await {
-                handle_error(&e);
-            }
-        }
-
         // Service commands — need tmux
         _ => {
             if !check_tmux().await {
@@ -340,7 +308,7 @@ async fn main() {
             let load_and_resolve =
                 |services: &[String],
                  groups: &[String]|
-                 -> Result<(Config, String, Vec<ResolvedService>), ConfigError> {
+                 -> Result<(Group, String, Vec<ResolvedService>), ConfigError> {
                     let (config, config_dir) = load_config(None)?;
                     let lookup = build_service_lookup(&config);
                     let targets = resolve_targets(&config, &lookup, services, groups)?;
@@ -432,7 +400,7 @@ async fn main() {
                             .unwrap_or_else(|e| handle_config_error(e))
                     };
                     let all_services = get_all_services(&config);
-                    cmd_config(&config, &targets, &all_services, raw, json);
+                    cmd_config(&targets, &all_services, raw, json);
                 }
                 _ => unreachable!(),
             }
