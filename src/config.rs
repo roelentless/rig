@@ -1380,9 +1380,22 @@ pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, Strin
     };
     let base = normalize_path(&base);
 
+    // The entry directory's own config/Makefile is found directly (regardless of
+    // gitignore) — a project may gitignore its rig.yaml (secrets) yet still expect
+    // rig to use it when run from that directory. Only downward sub-config discovery
+    // is gitignore-aware.
+    let has_own_config = pick_config_in_dir(&base).is_some();
+    let has_own_makefile = crate::providers::makefile::STANDARD_MAKEFILE_NAMES
+        .iter()
+        .any(|n| Path::new(&base).join(n).is_file());
+
     // Make-only is still valid: build the tree when either a rig file or a
-    // Makefile exists anywhere under the root.
-    if scan_rig_files(&base).is_empty() && scan_makefiles(&base).is_empty() {
+    // Makefile exists in the entry dir or anywhere discoverable under it.
+    if !has_own_config
+        && !has_own_makefile
+        && scan_rig_files(&base).is_empty()
+        && scan_makefiles(&base).is_empty()
+    {
         return Ok(None);
     }
 
