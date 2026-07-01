@@ -479,6 +479,157 @@ services:\n  svc-extra:\n    command: sh -c \"echo svc; sleep 30\"\n    working_
 }
 
 #[test]
+fn authored_group_named_like_config_folder_errors() {
+    // An authored group sharing its name with a config-bearing folder (not
+    // adopted via `dir:`) is a hard error naming both resolutions — silently
+    // dropping the folder's config was the bug.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "web/rig.yaml",
+        "tasks:\n  serve:\n    command: echo folder-serve\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  web:
+    tasks:
+      deploy:
+        command: echo authored-deploy
+        working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Group 'web'"),
+        "stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("dir: ./web"),
+        "error must offer adoption via dir:, stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("rename one of them"),
+        "error must offer renaming, stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn authored_group_adopting_same_named_folder_works() {
+    // The sanctioned spelling of the case above: the authored group adopts the
+    // same-named folder via `dir:` — no conflict, folder tasks scope under it.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "web/rig.yaml",
+        "tasks:\n  serve:\n    command: echo folder-serve\n    working_dir: /tmp\n",
+    );
+    ctx.write_file("rig.yaml", "groups:\n  web:\n    dir: ./web\n");
+
+    let run = ctx.rig(&["run", "web.serve"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.contains("folder-serve"),
+        "stdout: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn authored_group_named_like_plain_folder_works() {
+    // A folder with NO rig file or Makefile never becomes a group, so an
+    // authored group of the same name is not a conflict.
+    let ctx = TestContext::new();
+    ctx.write_file("web/placeholder.txt", "");
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  web:
+    tasks:
+      deploy:
+        command: echo authored-deploy
+        working_dir: /tmp
+"#,
+    );
+
+    let run = ctx.rig(&["run", "web.deploy"]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.contains("authored-deploy"),
+        "stdout: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn dir_group_inline_task_duplicating_dir_rig_task_errors() {
+    // A `dir:` group's inline task colliding with a rig task of the same name
+    // from the dir's own rig file is a hard error naming the full task path —
+    // rig-vs-rig never silently keeps both (only make targets are displaced).
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "svc/rig.yaml",
+        "tasks:\n  build:\n    command: echo dir-build\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  api:
+    dir: ./svc
+    tasks:
+      build:
+        command: echo inline-build
+        working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Duplicate task 'api.build'"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn dir_group_inline_service_duplicating_dir_rig_service_errors() {
+    // Same hard error for services: a `dir:` group's inline service colliding
+    // with the dir rig file's service of the same name names the full path.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "svc/rig.yaml",
+        "services:\n  worker:\n    command: sh -c \"echo dir-worker; sleep 30\"\n    working_dir: /tmp\n",
+    );
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+groups:
+  api:
+    dir: ./svc
+    services:
+      worker:
+        command: sh -c "echo inline-worker; sleep 30"
+        working_dir: /tmp
+"#,
+    );
+
+    let result = ctx.rig(&["config"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Duplicate service 'api.worker'"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
 fn sibling_duplicate_task_name_errors() {
     // The same task name in two sibling rig files in one dir is a hard error —
     // the conflict is named, not silently dropped.

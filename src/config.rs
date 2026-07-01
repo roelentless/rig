@@ -1150,9 +1150,11 @@ fn add_make_tasks(group: &mut Group, dir: &str) {
 /// Build a group backed by a directory: its own rig file (bare units + authored
 /// child groups + props) plus folder-auto child groups for subdirs that hold a
 /// rig file and aren't already adopted by an authored `dir:`/`paths:` group.
+/// `path` is the group's fully-qualified dotted path (`""` for the root).
 fn build_dir_group(
     name: &str,
     dir: &str,
+    path: &str,
     visited: &mut HashSet<String>,
 ) -> Result<Group, ConfigError> {
     let dir_norm = normalize_path(dir);
@@ -1214,6 +1216,7 @@ fn build_dir_group(
             grp_src.insert(cname.clone(), file_str.clone());
             let child = build_child_group(
                 &cname,
+                &join_path(path, &cname),
                 &cbody,
                 &parsed.dir,
                 &mut adopted_dirs,
@@ -1259,10 +1262,24 @@ fn build_dir_group(
         if adopted_dirs.contains(&sub) {
             continue;
         }
+        // An authored group with the same name as a non-adopted config-bearing
+        // folder would silently drop the folder's entire config. Hard error:
+        // the user resolves by adopting the folder or renaming one of them.
         if group.groups.iter().any(|c| c.name == seg) {
-            continue; // authored group of the same segment wins
+            return Err(ConfigError::generic(format!(
+                "Group '{}' conflicts with folder '{}' which has its own config. \
+                 Adopt the folder by setting `dir: ./{}` on the group, or rename one of them",
+                join_path(path, &seg),
+                sub,
+                seg
+            )));
         }
-        group.groups.push(build_dir_group(&seg, &sub, visited)?);
+        group.groups.push(build_dir_group(
+            &seg,
+            &sub,
+            &join_path(path, &seg),
+            visited,
+        )?);
     }
 
     Ok(group)
@@ -1271,18 +1288,57 @@ fn build_dir_group(
 /// Overlay rig-authored tasks onto a group's task list, rig winning on a name
 /// clash: any existing make-sourced task with a name being added is dropped
 /// first (a `dir:` group's inline/`paths:` rig task beats the dir's Makefile
-/// target). Rig-vs-rig collisions keep both, as before (resolution reports the
-/// ambiguity).
-fn overlay_rig_tasks(dst: &mut Vec<(String, TaskDef)>, add: Vec<(String, TaskDef)>) {
+/// target). A rig-vs-rig collision in the same group is a hard error (silently
+/// keeping both made listing show the path twice and resolution pick one).
+/// `group_path` is the group's fully-qualified dotted path.
+fn overlay_rig_tasks(
+    dst: &mut Vec<(String, TaskDef)>,
+    add: Vec<(String, TaskDef)>,
+    group_path: &str,
+) -> Result<(), ConfigError> {
     let adding: HashSet<String> = add.iter().map(|(n, _)| n.clone()).collect();
     dst.retain(|(n, d)| !(d.source == TaskSource::Make && adding.contains(n)));
+    for (n, _) in &add {
+        if dst.iter().any(|(e, _)| e == n) {
+            return Err(ConfigError::generic(format!(
+                "Duplicate task '{}': defined more than once in group '{}'; rename one of the definitions",
+                join_path(group_path, n),
+                group_path
+            )));
+        }
+    }
     dst.extend(add);
+    Ok(())
+}
+
+/// Append rig-authored services onto a group's service list. Services have no
+/// make-sourced analogue to displace, so any name clash is rig-vs-rig and a
+/// hard error, same as tasks. `group_path` is the group's fully-qualified
+/// dotted path.
+fn overlay_rig_services(
+    dst: &mut Vec<(String, ServiceDef)>,
+    add: Vec<(String, ServiceDef)>,
+    group_path: &str,
+) -> Result<(), ConfigError> {
+    for (n, _) in &add {
+        if dst.iter().any(|(e, _)| e == n) {
+            return Err(ConfigError::generic(format!(
+                "Duplicate service '{}': defined more than once in group '{}'; rename one of the definitions",
+                join_path(group_path, n),
+                group_path
+            )));
+        }
+    }
+    dst.extend(add);
+    Ok(())
 }
 
 /// Build an authored child group from its inline body. `dir:` recurses into a
 /// directory; `paths:` pulls explicit files; inline units/props apply on top.
+/// `path` is the group's fully-qualified dotted path.
 fn build_child_group(
     name: &str,
+    path: &str,
     body: &serde_yaml::Value,
     parent_dir: &str,
     adopted_dirs: &mut HashSet<String>,
@@ -1314,7 +1370,7 @@ fn build_child_group(
     let mut group = if let Some(d) = dir_ref {
         let cd = resolve_path(d, parent_dir);
         adopted_dirs.insert(cd.clone());
-        let mut g = build_dir_group(name, &cd, visited)?;
+        let mut g = build_dir_group(name, &cd, path, visited)?;
         g.dir = Some(PathBuf::from(&cd));
         g
     } else {
@@ -1329,8 +1385,8 @@ fn build_child_group(
     }
     group.props.env.extend(parsed.props.env);
     group.props.env_files.extend(parsed.props.env_files);
-    overlay_rig_tasks(&mut group.tasks, parsed.tasks);
-    group.services.extend(parsed.services);
+    overlay_rig_tasks(&mut group.tasks, parsed.tasks, path)?;
+    overlay_rig_services(&mut group.services, parsed.services, path)?;
 
     // Explicit `paths:` files pulled into this group.
     if let Some(paths) = body
@@ -1350,11 +1406,12 @@ fn build_child_group(
             let pparsed = parse_file(&pf)?;
             group.props.env.extend(pparsed.props.env);
             group.props.env_files.extend(pparsed.props.env_files);
-            overlay_rig_tasks(&mut group.tasks, pparsed.tasks);
-            group.services.extend(pparsed.services);
+            overlay_rig_tasks(&mut group.tasks, pparsed.tasks, path)?;
+            overlay_rig_services(&mut group.services, pparsed.services, path)?;
             for (cname, cbody) in pparsed.child_groups {
                 let child = build_child_group(
                     &cname,
+                    &join_path(path, &cname),
                     &cbody,
                     &pparsed.dir,
                     adopted_dirs,
@@ -1374,6 +1431,7 @@ fn build_child_group(
         }
         let child = build_child_group(
             &cname,
+            &join_path(path, &cname),
             &cbody,
             parent_dir,
             adopted_dirs,
@@ -1490,7 +1548,7 @@ pub fn try_load_config(config_path: Option<&str>) -> Result<Option<(Group, Strin
 
     log_verbose(&format!("config_root={}", base));
     let mut visited = HashSet::new();
-    let root = build_dir_group("", &base, &mut visited)?;
+    let root = build_dir_group("", &base, "", &mut visited)?;
     validate_depends_on(&root)?;
     Ok(Some((root, base)))
 }
