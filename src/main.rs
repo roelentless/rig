@@ -475,6 +475,11 @@ fn kill_descendants(root: u32) {
 
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for (pid, proc_) in sys.processes() {
+        // On Linux, sysinfo lists threads (/proc/*/task) as processes parented to
+        // their own process; killing one SIGKILLs the whole thread group — i.e. us.
+        if proc_.thread_kind().is_some() {
+            continue;
+        }
         if let Some(parent) = proc_.parent() {
             children.entry(parent).or_default().push(*pid);
         }
