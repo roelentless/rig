@@ -1,10 +1,12 @@
-# Infrastructure services (imported by root config)
+# Infrastructure services.
+#
+# This folder is auto-discovered from the parent config as the `infra` group
+# (folder = group), so these top-level services become `infra.mail`, etc.
+# No `groups:` wrapper needed — the directory provides the namespace.
 
-groups:
-  infra:
-    services:
-      mail:
-        command: deno run -A mail.ts
-        working_dir: .
-        healthcheck:
-          grace_ms: 300
+services:
+  mail:
+    command: deno run -A mail.ts
+    working_dir: .
+    healthcheck:
+      grace_ms: 300

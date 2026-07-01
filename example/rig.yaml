@@ -1,9 +1,9 @@
 # Example rig config - all features in one file
 #
 # See cli-log.md for real command output examples.
-
-imports:
-  - infra/rig.yaml  # Multi-file configs: import services from other files
+#
+# The infra/ subfolder is auto-discovered as an `infra` group (folder = group),
+# so no imports are needed — composition follows the directory tree.
 
 groups:
   backend:
