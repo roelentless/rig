@@ -240,6 +240,38 @@ fn subfolder_short_name_in_two_folders_is_ambiguous() {
 }
 
 #[test]
+fn dotted_folder_name_is_not_discovered() {
+    // Folder-auto group names become dotted paths, so a folder whose NAME
+    // contains a dot (app.v2) can't be addressed and is skipped entirely —
+    // its Makefile never surfaces, and a warning says so. A dot-free sibling
+    // is still discovered.
+    let ctx = TestContext::new();
+    ctx.write_file(
+        "rig.yaml",
+        r#"
+tasks:
+  hello:
+    command: echo hello
+"#,
+    );
+    ctx.write_file("app.v2/Makefile", "deploy:\n\t@echo v2-deploy\n");
+    ctx.write_file("backend/Makefile", "migrate:\n\t@echo backend-migrate\n");
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(!clean.contains("app.v2.deploy"), "stdout: {}", clean);
+    assert!(!clean.contains("deploy"), "stdout: {}", clean);
+    assert!(clean.contains("backend.migrate"), "stdout: {}", clean);
+    assert!(clean.contains("hello"), "stdout: {}", clean);
+    assert!(
+        clean.contains("ignoring folder") && clean.contains("app.v2"),
+        "expected a warning about the ignored dotted folder: {}",
+        clean
+    );
+}
+
+#[test]
 fn gitignored_makefile_is_not_discovered() {
     // A Makefile under a gitignored directory must be excluded from the walk.
     let ctx = TestContext::new();

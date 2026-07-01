@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::output::log_verbose;
+use crate::output::{log_system, log_verbose};
 
 // ============================================================================
 // ERRORS
@@ -1229,7 +1229,8 @@ fn build_dir_group(
 
     // Folder-auto child groups: immediate subdirs holding a non-adopted rig file
     // OR a Makefile. Namespacing is the relative folder path, identical for
-    // make-only and rig-only monorepos.
+    // make-only and rig-only monorepos. Dotted folder names would break dotted
+    // group-path walking, so those dirs are skipped entirely (not descended).
     let mut subdirs: BTreeSet<String> = BTreeSet::new();
     for f in &scan_rig_files(&dir_norm) {
         let f_norm = normalize_path(&f.to_string_lossy());
@@ -1247,6 +1248,13 @@ fn build_dir_group(
     }
 
     for seg in subdirs {
+        if seg.contains('.') {
+            log_system(&format!(
+                "ignoring folder '{}/{}': dotted folder names are not supported as groups",
+                dir_norm, seg
+            ));
+            continue;
+        }
         let sub = normalize_path(&format!("{}/{}", dir_norm, seg));
         if adopted_dirs.contains(&sub) {
             continue;
