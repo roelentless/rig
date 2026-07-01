@@ -874,12 +874,14 @@ pub async fn cmd_init() -> Result<(), String> {
 // DISCOVERY
 // ============================================================================
 
-fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
-    let pattern = regex::Regex::new(r"(^rig\.ya?ml$|.*\.rig\.yaml$)").unwrap();
-
+/// Walk `root_dir` downward, gitignore-aware, returning every file path. Shared
+/// ignore setup (hidden dirs like `.git` skipped at any depth, `.gitignore` honored
+/// even outside a git repo, vendored/build dirs excluded) reused by both rig-file and
+/// Makefile discovery.
+pub(crate) fn walk_ignored_files(root_dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
     let mut builder = ignore::WalkBuilder::new(root_dir);
     builder
-        .hidden(false)
+        .hidden(true)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
@@ -905,10 +907,20 @@ fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
     let mut results = Vec::new();
     for entry in builder.build().flatten() {
         if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            let name = entry.file_name().to_string_lossy();
-            if pattern.is_match(&name) {
-                results.push(entry.path().to_string_lossy().to_string());
-            }
+            results.push(entry.path().to_path_buf());
+        }
+    }
+    Ok(results)
+}
+
+fn scan_for_rig_files(root_dir: &str) -> Result<Vec<String>, String> {
+    let pattern = regex::Regex::new(r"(^rig\.ya?ml$|.*\.rig\.yaml$)").unwrap();
+
+    let mut results = Vec::new();
+    for path in walk_ignored_files(root_dir)? {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if pattern.is_match(&name) {
+            results.push(path.to_string_lossy().to_string());
         }
     }
     Ok(results)

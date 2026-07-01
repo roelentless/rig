@@ -178,6 +178,112 @@ groups:
 }
 
 #[test]
+fn subfolder_walk_namespaces_by_relative_path() {
+    // A tree of Makefiles (no rig.yaml): CWD → bare names, subfolders → dotted
+    // namespaces derived from their relative path.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "build:\n\t@echo root-build\n");
+    ctx.write_file(
+        "backend/Makefile",
+        "build:\n\t@echo backend-build\n\nmigrate:\n\t@echo backend-migrate\n",
+    );
+    ctx.write_file(
+        "apps/web/Makefile",
+        "build:\n\t@echo web-build\n\nbundle:\n\t@echo web-bundle\n",
+    );
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(clean.contains("build"), "stdout: {}", clean);
+    assert!(clean.contains("backend.build"), "stdout: {}", clean);
+    assert!(clean.contains("backend.migrate"), "stdout: {}", clean);
+    assert!(clean.contains("apps.web.build"), "stdout: {}", clean);
+    assert!(clean.contains("apps.web.bundle"), "stdout: {}", clean);
+}
+
+#[test]
+fn subfolder_dotted_run_executes_that_makefile() {
+    // A fully-qualified name runs the target in its own Makefile's folder.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "build:\n\t@echo root-build\n");
+    ctx.write_file(
+        "backend/Makefile",
+        "migrate:\n\t@echo backend-migrate-output\n",
+    );
+
+    let result = ctx.rig(&["run", "backend.migrate"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains("backend-migrate-output"),
+        "stdout: {}",
+        result.stdout
+    );
+}
+
+#[test]
+fn subfolder_short_name_in_two_folders_is_ambiguous() {
+    // `build` exists in the root and two subfolders — a short name is ambiguous
+    // across folder namespaces and must error rather than pick one.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "build:\n\t@echo root-build\n");
+    ctx.write_file("backend/Makefile", "build:\n\t@echo backend-build\n");
+    ctx.write_file("apps/web/Makefile", "build:\n\t@echo web-build\n");
+
+    let result = ctx.rig(&["run", "build"]);
+    assert_eq!(result.code, 1, "stdout: {}", result.stdout);
+    assert!(
+        result.stderr.contains("Ambiguous task"),
+        "stderr: {}",
+        result.stderr
+    );
+}
+
+#[test]
+fn gitignored_makefile_is_not_discovered() {
+    // A Makefile under a gitignored directory must be excluded from the walk.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "build:\n\t@echo root-build\n");
+    ctx.write_file("ignored/Makefile", "secret:\n\t@echo secret-target\n");
+    ctx.write_file(".gitignore", "ignored/\n");
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(clean.contains("build"), "stdout: {}", clean);
+    assert!(
+        !clean.contains("secret"),
+        "gitignored Makefile leaked: {}",
+        clean
+    );
+    assert!(
+        !clean.contains("ignored."),
+        "gitignored namespace leaked: {}",
+        clean
+    );
+}
+
+#[test]
+fn hidden_dir_makefile_is_not_discovered() {
+    // A Makefile inside a hidden directory (e.g. .git, .cache) must be skipped at
+    // any depth — the walk ignores dot-dirs.
+    let ctx = TestContext::new();
+    ctx.write_file("Makefile", "build:\n\t@echo root-build\n");
+    ctx.write_file(".hidden/Makefile", "secret:\n\t@echo secret-target\n");
+    ctx.write_file("nested/.git/Makefile", "reflog:\n\t@echo reflog-target\n");
+
+    let result = ctx.rig(&["tasks"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let clean = strip_ansi(&result.stdout);
+    assert!(clean.contains("build"), "stdout: {}", clean);
+    assert!(
+        !clean.contains("secret") && !clean.contains("reflog"),
+        "hidden-dir Makefile leaked: {}",
+        clean
+    );
+}
+
+#[test]
 fn group_working_dir_inherited_by_task() {
     // Group-level working_dir remains the default working dir for group tasks
     // that omit their own (unchanged by the make-provider work).
