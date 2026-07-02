@@ -1,0 +1,11 @@
+# Group `svc` adopts the Makefile in ./mk (dir:). Its make target `greet`
+# inherits the group's `environment:` and, by ancestor cascade, the root-level
+# `environment:` — proving group env reaches a make recipe.
+environment:
+  ANCESTOR_VAR: from-root
+
+groups:
+  svc:
+    dir: mk
+    environment:
+      GROUP_VAR: from-group

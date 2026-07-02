@@ -7,6 +7,8 @@ rig.yml
 !example/rig.yaml
 !example/**/*.rig.yaml
 !example/*.rig.yaml
+!tests/fixtures/**/rig.yaml
+!tests/fixtures/**/rig.yml
 .rig/
 test/tmp/
 rfc/
