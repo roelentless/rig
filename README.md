@@ -96,7 +96,7 @@ mv rig ~/.local/bin/
 
 # Example for macOS arm64:
 curl -fsSL https://github.com/roelentless/rig/releases/latest/download/rig-macos-arm64.tar.gz | tar xz
-mv rig /usr/local/bin/
+mv rig ~/.local/bin/
 ```
 
 ## Configuration

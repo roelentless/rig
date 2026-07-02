@@ -38,17 +38,20 @@ if ! has curl; then
   exit 1
 fi
 
-# Prompt Y/n - reads from /dev/tty when stdin is a pipe
+# Prompt Y/n - reads from /dev/tty when stdin is a pipe.
+# $2 is the assumed answer (y/n, default y) when no usable terminal exists
+# (headless/CI): the install itself proceeds, optional extras are skipped.
 prompt_yn() {
   if [ "${AUTO_YES}" = true ]; then return 0; fi
   if [ -t 0 ]; then
     printf "%s" "$1"
     read -r answer
-  elif [ -e /dev/tty ]; then
+  elif ( : < /dev/tty ) 2>/dev/null; then
     printf "%s" "$1"
     read -r answer < /dev/tty
   else
-    return 0
+    [ "${2:-y}" = "y" ]
+    return
   fi
   case "$answer" in
     n|N|no|No) return 1 ;;
@@ -108,9 +111,11 @@ check_stale_system_rig() {
 # Version check
 # ============================================================================
 
+# Resolve the latest release tag from the releases/latest redirect —
+# no GitHub API call, so unauthenticated rate limits never apply.
 get_latest_version() {
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+  curl -fsSLI -o /dev/null -w '%{url_effective}' "${REPO_URL}/releases/latest" 2>/dev/null \
+    | sed 's|.*/tag/||;s|[/[:space:]]*$||' | grep -v '/'
 }
 
 get_installed_version() {
@@ -167,10 +172,12 @@ install_watchexec() {
   fi
 
   info "Installing watchexec via webi..."
-  if curl -fsSL https://webi.sh/watchexec | sh >/dev/null 2>&1; then
+  WEBI_OUT=$(curl -fsSL https://webi.sh/watchexec | sh 2>&1)
+  if [ $? -eq 0 ] && { has watchexec || [ -x "$HOME/.local/bin/watchexec" ]; }; then
     ok "watchexec installed"
   else
-    err "watchexec install failed."
+    printf '%s\n' "$WEBI_OUT" | tail -5 >&2
+    err "watchexec install failed (webi output above)."
     err "Install manually: https://github.com/${WE_REPO}/releases"
     return 1
   fi
@@ -183,7 +190,7 @@ maybe_install_watchexec() {
   if [ "$INSTALL_WATCHEXEC" = true ]; then
     install_watchexec
   elif [ "$AUTO_YES" != true ]; then
-    if prompt_yn "  Install watchexec? (optional, enables file watching) [Y/n] "; then
+    if prompt_yn "  Install watchexec? (optional, enables file watching) [Y/n] " n; then
       install_watchexec
     else
       info "Skipped. Install later:"

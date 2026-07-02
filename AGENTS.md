@@ -54,8 +54,9 @@
 - Do not use `.tar.xz` for anything — watchexec has no `.tar.gz` release so we delegate to webi instead of handling archives ourselves
 - Transparency pattern: check deps → show plan → ask user → download binary
 - Read user input when stdin is a pipe: redirect from `/dev/tty`
-- Install location: `~/.local/bin` on Linux, `/usr/local/bin` on macOS
-- Version check: skips download if already up to date
+- Install location: `~/.local/bin` on all platforms (no sudo); a stale `/usr/local/bin/rig` triggers a shadow warning
+- Version check: skips download if already up to date; the latest tag comes from the `releases/latest` redirect, not the GitHub API — unauthenticated API rate limits would break repeated/CI installs
+- No usable tty (headless/CI): the rig install proceeds, optional extras (watchexec) are skipped — `--with-watchexec` is the explicit opt-in. Probe /dev/tty in a subshell: a redirection failure on a special builtin like `:` kills a POSIX sh outright
 - The installer doubles as upgrader — safe to re-run
 - Supported platforms: macOS (arm64, x86_64), Linux (amd64, arm64)
 
