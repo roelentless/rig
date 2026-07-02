@@ -338,6 +338,20 @@ groups:
 **Rig tasks override Makefile targets.** If a `rig.yaml` task and a Makefile target share a
 name in the same group, the rig task wins.
 
+**Make targets are never services.** A long-lived target (a dev server, a watcher) stays a
+plain task until you define it as a service in a sibling rig file — that's what puts rig's
+runtime around it: tmux lifecycle, logs, env layering, working dir:
+
+```yaml
+# rig.yaml next to the Makefile
+services:
+  dev-server:
+    command: make serve
+    working_dir: .
+    environment:
+      PORT: 4000
+```
+
 For a non-standard Makefile name (e.g. `ci.mk`), `include` it from a standard `Makefile` —
 rig follows includes and picks up its targets.
 
